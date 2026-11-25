@@ -1,7 +1,6 @@
 name: Collect classrooms
 
 on:
-  schedule:
   workflow_dispatch:
     inputs:
       mode:

@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "policies": [
+    {
+      "id": "grade-point",
+      "title": "东北大学秦皇岛分校本科生学分绩点实施办法",
+      "category": "学业成绩",
+      "sha256": "c21e608682f26c0ffd9ab2843c0702ddeabbec525c556efd33c874560d282a60"
+    },
+    {
+      "id": "graduate-recommendation",
+      "title": "东北大学秦皇岛分校关于推荐优秀应届本科毕业生免试攻读研究生工作办法",
+      "category": "推免升学",
+      "sha256": "b5b29b951c2d6315eed76cb76101ddcc8bf984162b9514500b8e27d9ebd74941"
+    },
+    {
+      "id": "innovation-recommendation",
+      "title": "东北大学秦皇岛分校创新特长类推荐免试攻读研究生学术研究和学科竞赛成绩计算办法",
+      "category": "推免升学",
+      "sha256": "bcb9cf40912085e3f7e4d3ffaf754baa565db611e5a76d99c7300957ca8f3fb4"
+    },
+    {
+      "id": "integrated-study",
+      "title": "东北大学秦皇岛分校本研贯通培养实施办法",
+      "category": "推免升学",
+      "sha256": "52f5c838d982233a1db0a82937e1025ea8a4265a53c1892c72be60bd53a692ea"
+    },
+    {
+      "id": "national-scholarships",
+      "title": "东北大学秦皇岛分校本科生国家奖（助）学金评审办法",
+      "category": "奖助学金",
+      "sha256": "5a95891f2178ae06478df81ba0a4024ea799ccf8406d7089f1a5c10c0e4c6cea"
+    }
+  ]
+}

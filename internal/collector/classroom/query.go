@@ -35,7 +35,8 @@ func buildingIDs(doc *goquery.Document, buildings []string) map[string]string {
 		options := map[string]bool{}
 		doc.Find(`select[name="classroom.building.id"] option:not([disabled])`).Each(func(_ int, option *goquery.Selection) {
 			id := option.AttrOr("value", "")
-			if numberID.MatchString(id) && compact(option.AttrOr("label", option.Text())) == name {
+			label := compact(option.AttrOr("label", option.Text()))
+			if numberID.MatchString(id) && (label == name || stripCampusLabel(label) == name) {
 				options[id] = true
 			}
 		})
@@ -69,23 +70,42 @@ type room struct{ name, building, equipment, capacity string }
 
 func compact(s string) string { return strings.Join(strings.Fields(s), "") }
 
-func collectRoom(r room, building string) (string, model.RoomDetail, bool) {
-	var detail model.RoomDetail
+const campusAlias = `(?:学校本部|校本部|本部)`
+const campusSeparators = `[-－—_/／·:：]`
+
+var campusPrefix = regexp.MustCompile(`^(?:[（(【\[]` + campusAlias + `[）)】\]]|` + campusAlias + `)` + campusSeparators + `*`)
+var campusSuffix = regexp.MustCompile(`(?:[（(【\[]` + campusAlias + `[）)】\]]|` + campusSeparators + campusAlias + `)$`)
+
+// 校区列样本使用“学校本部”和“校本部”。只清理这些校区别名及常见分隔符。
+func stripCampusLabel(value string) string {
+	label := compact(value)
+	without := campusPrefix.ReplaceAllString(label, "")
+	without = campusSuffix.ReplaceAllString(without, "")
+	if without != label {
+		return strings.Trim(without, "（）()【】[]")
+	}
+	return label
+}
+
+func excludedRoom(r room) bool {
 	for _, label := range specialRooms {
 		if strings.Contains(r.name, label) || strings.Contains(r.equipment, label) {
-			return "", detail, false
+			return true
 		}
 	}
 	capacity, err := strconv.Atoi(r.capacity)
-	if err == nil {
-		if capacity == 0 {
-			return "", detail, false
-		}
-		if capacity > 0 && capacity <= 3000 {
-			detail.Capacity = &capacity
-		}
+	return err == nil && capacity == 0
+}
+
+func collectRoom(r room, building string) (string, model.RoomDetail, bool) {
+	var detail model.RoomDetail
+	if excludedRoom(r) {
+		return "", detail, false
 	}
-	name := noteSuffix.ReplaceAllString(strings.ToUpper(r.name), "")
+	if capacity, err := strconv.Atoi(r.capacity); err == nil && capacity > 0 && capacity <= 3000 {
+		detail.Capacity = &capacity
+	}
+	name := noteSuffix.ReplaceAllString(strings.ToUpper(stripCampusLabel(r.name)), "")
 	if building == "科技楼" {
 		if m := scienceStudy.FindStringSubmatch(name); m != nil {
 			name = m[2] + "自习室" + m[1]

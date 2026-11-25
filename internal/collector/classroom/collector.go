@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -81,7 +82,7 @@ func (c *Collector) period(ctx context.Context, day *model.Day, period string, s
 		}
 		return len(rooms), nil
 	}
-	c.Log.Warn("全校时段查询失败", "date", day.Date, "period", period, "reason", err)
+	c.warnQuery(ctx, "全校时段查询失败", err, slog.String("date", day.Date), slog.String("period", period))
 	if !errors.Is(err, errResult) && !errors.Is(err, errScope) && !errors.Is(err, client.ErrTooLarge) {
 		return 0, err
 	}
@@ -94,7 +95,7 @@ func (c *Collector) period(ctx context.Context, day *model.Day, period string, s
 		}
 		rooms, err := c.fetch(ctx, day.Date, start, building)
 		if err != nil {
-			c.Log.Warn("楼栋时段补查失败", "date", day.Date, "period", period, "building", building, "reason", err)
+			c.warnQuery(ctx, "楼栋时段补查失败", err, slog.String("date", day.Date), slog.String("period", period), slog.String("building", building))
 			if stop(err) {
 				return count, err
 			}
@@ -114,7 +115,7 @@ func (c *Collector) page(ctx context.Context, date string, start, number int, bu
 	for {
 		id := c.ids[building]
 		if building != "" && id == "" {
-			return grid{}, errScope
+			return grid{}, &scopeMismatch{source: "building.option", field: "classroom.building.id", expected: "<已确认编号>", actual: "<空>", page: number}
 		}
 		form := query(date, start, number, id)
 		response, err := c.Session.HTTP.Do(ctx, c.Session.Routes.Academic(auth.SearchPath), form, true, true)
@@ -134,7 +135,9 @@ func (c *Collector) page(ctx context.Context, date string, start, number int, bu
 			return grid{}, fmt.Errorf("%w，重新认证失败：%w", client.ErrExpired, err)
 		}
 		if building != "" && id != c.ids[building] {
-			return grid{}, errScope
+			return grid{}, &scopeMismatch{source: "building.option", field: "classroom.building.id",
+				expected: echoDiagnostic("classroom.building.id", []string{id}),
+				actual:   echoDiagnostic("classroom.building.id", []string{c.ids[building]}), page: number}
 		}
 	}
 }
@@ -172,11 +175,11 @@ func (c *Collector) fetch(ctx context.Context, date string, start int, building 
 		if total < 0 && g.total >= 0 {
 			total = g.total
 		}
-		for _, r := range g.rows {
+		for row, r := range g.rows {
 			if noteSuffix.ReplaceAllString(r.name, "") == "" {
 				continue
 			}
-			actual, err := c.resolveBuilding(r, building)
+			actual, err := c.resolveBuilding(r, building, page, row+1)
 			if err != nil {
 				return nil, err
 			}
@@ -208,29 +211,64 @@ func (c *Collector) fetch(ctx context.Context, date string, start int, building 
 	return found, nil
 }
 
-func (c *Collector) resolveBuilding(r room, requested string) (string, error) {
-	match := ""
-	for _, name := range c.Buildings {
-		if strings.Contains(r.name, name) {
-			if match != "" {
-				return "", errScope
-			}
-			match = name
+func (c *Collector) resolveBuilding(r room, requested string, page, row int) (string, error) {
+	column := compact(r.building)
+	if !slices.Contains(c.Buildings, column) {
+		column = stripCampusLabel(column)
+	}
+	fromName := c.buildingFromRoomName(r.name)
+	if requested != "" {
+		switch {
+		case column != "" && column != requested:
+			return "", c.buildingMismatch("grid.building", requested, column, page, row)
+		case fromName != "" && fromName != requested:
+			return "", c.buildingMismatch("grid.roomName", requested, fromName, page, row)
+		default:
+			return requested, nil
 		}
 	}
-	if r.building != "" {
-		if (match != "" && match != r.building) || (requested != "" && requested != r.building) {
-			return "", errScope
+	if column != "" && fromName != "" && column != fromName {
+		return "", c.buildingMismatch("grid.building", fromName, column, page, row)
+	}
+	if column != "" {
+		return column, nil
+	}
+	if fromName != "" {
+		return fromName, nil
+	}
+	// 排除项仍计入上游分页行数，不需要用空楼栋字段推断所属楼栋。
+	if excludedRoom(r) {
+		return "", nil
+	}
+	return "", c.buildingMismatch("grid.building", "", "", page, row)
+}
+
+func (c *Collector) buildingFromRoomName(raw string) string {
+	name := noteSuffix.ReplaceAllString(strings.ToUpper(stripCampusLabel(raw)), "")
+	if matches := scienceStudy.FindStringSubmatch(name); matches != nil && model.RoomName.MatchString(matches[2]) {
+		return "科技楼"
+	}
+	for _, building := range c.Buildings {
+		if suffix, ok := strings.CutPrefix(name, building); ok && (model.RoomName.MatchString(suffix) ||
+			slices.ContainsFunc(specialRooms, func(label string) bool { return strings.HasPrefix(suffix, label) })) {
+			return building
 		}
-		return r.building, nil
 	}
-	if requested != "" && (match == "" || match == requested) {
-		return requested, nil
+	return ""
+}
+
+func (c *Collector) buildingMismatch(source, expected, actual string, page, row int) error {
+	if expected == "" {
+		expected = "<可识别楼栋>"
 	}
-	if requested == "" && match != "" {
-		return match, nil
+	switch {
+	case actual == "":
+		actual = "<空>"
+	case !slices.Contains(c.Buildings, actual) && actual != "科技楼":
+		// 配置以外的楼栋单元格可能含任意文本。
+		actual = "<已脱敏：未识别楼栋>"
 	}
-	return "", errScope
+	return &scopeMismatch{source: source, field: "building", expected: expected, actual: actual, page: page, row: row}
 }
 
 func mergeRoom(old, next model.RoomDetail) (model.RoomDetail, error) {

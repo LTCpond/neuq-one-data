@@ -1,18 +1,19 @@
 # NEUQ One Data
 
-NEUQ One 的非官方空教室数据采集与发布服务。Go Collector 从学校教务系统采集数据，生成供 Flutter 客户端读取的静态 JSON。API 包含教室编号、容量、设备分类、目标日期、空闲时段和每个时段的实际采集时间。
+NEUQ One 的非官方公共数据与静态资源服务。Cloudflare Pages 为 Flutter 客户端提供空教室 API 和校园地图。Go Collector 从学校教务系统采集空教室数据，生成包含教室编号、容量、设备分类、目标日期、空闲时段和实际采集时间的静态 JSON。
 
-默认覆盖今天及未来六天、每天六个课节组，以及工学馆、科技楼和人文楼。发布目录包含三份 JSON 和 Pages 响应头配置。
+空教室默认覆盖今天及未来六天、每天六个课节组，以及工学馆、科技楼和人文楼。发布目录包含三份 JSON、Pages 响应头配置和仓库中的 `assets/` 静态资源。
 
 - [API 文档](docs/api.md)及 [JSON Schema](docs/api-v1.schema.json)
 - [Flutter 接入设计](docs/flutter-integration.md)
+- [静态资源与校园地图](docs/static-assets.md)
 - [协议依据与待验证项](docs/upstream.md)
 
 ## 架构与更新频率
 
 **Cloudflare Workers Cron Triggers → GitHub REST API `workflow_dispatch` → GitHub Actions → Go Collector → Cloudflare Pages → Flutter 客户端**
 
-Cloudflare Worker `neuq-one-scheduler` 用加密 Secret `GITHUB_TOKEN` 调用 GitHub REST API，触发默认分支上的 [`classrooms.yml`](.github/workflows/classrooms.yml)。GitHub Actions 构建并运行 Go Collector，校验快照后通过 Wrangler 发布到 Cloudflare Pages。Flutter 客户端从 Pages 生产地址读取公开 API。
+Cloudflare Worker `neuq-one-scheduler` 用加密 Secret `GITHUB_TOKEN` 调用 GitHub REST API，触发默认分支上的 [`classrooms.yml`](.github/workflows/classrooms.yml)。GitHub Actions 构建并运行 Go Collector，校验快照后将 `assets/` 合并到 `public/assets/`，再通过 Wrangler 发布到 Cloudflare Pages。Flutter 客户端从同一生产地址读取公开 API 和静态资源。
 
 Worker 的 Cron 表达式为 `5 * * * *`，按 UTC 调度。每次请求都带 `publish=true` 和 `bootstrap=false`。
 
@@ -39,6 +40,7 @@ go build ./...
 ```sh
 go run ./cmd/collector -mode week -output public
 go run ./cmd/collector -verify -output public
+bash scripts/stage-assets.sh
 ```
 
 `-mode today` 只查询当天，仍生成配置天数的快照，未来日期从历史快照按同日期补齐。`-previous` 接受 HTTPS 站点根地址或本地 `week.json` 文件。首次生成时可省略，本地重跑时请给 `-output` 一个尚未创建的目录。学校响应、Cookie 和认证表单只在进程内存中处理。日志只记录查询日期、楼栋、时段和归类后的失败原因。并行运行受本地工作目录锁和同仓库工作流并发组限制。
@@ -87,6 +89,8 @@ go run ./cmd/collector -verify -output public
 查询按日期和时段串行执行。每个时段按 `NEUQ_BUILDINGS` 的配置顺序逐栋查询，默认依次查询工学馆、科技楼、人文楼。楼栋编号缺失时，该楼栋时段保持不可用。部分失败时，同日期已有的有效历史数据可标为 `stale` 并保留原始采集时间。临时网络和服务器错误用指数退避、抖动和 `Retry-After` 控制重试。认证失败、交互验证和访问限制会终止任务。若整体失败、跨北京时间午夜或校验失败，保留上一版线上快照。
 
 ## 部署
+
+地图由维护者手动将 `assets/maps/campus-map.png` 提交到默认分支，随下一次成功的生产部署上线。[上传步骤与转载许可记录](docs/static-assets.md)
 
 ### 建立第一个生产快照
 

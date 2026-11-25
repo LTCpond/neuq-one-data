@@ -3,3 +3,6 @@
   Content-Type: application/json; charset=utf-8
   X-Content-Type-Options: nosniff
   Access-Control-Allow-Origin: *
+
+/assets/*
+  Cache-Control: public, no-cache, no-transform

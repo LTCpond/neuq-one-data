@@ -70,6 +70,8 @@ jobs:
           if [[ "$BOOTSTRAP" == true ]]; then previous=''; fi
           .work/collector -mode "$MODE" -previous "$previous" -output public
           .work/collector -verify -output public
+      - name: Stage static assets
+        run: bash scripts/stage-assets.sh
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         if: github.event_name == 'schedule' || inputs.publish
         with:

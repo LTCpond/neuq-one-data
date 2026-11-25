@@ -1,5 +1,13 @@
 # NEUQ One 客户端接入
 
+## 校园地图
+
+Flutter 的「服务 → 校园地图」从 `GET /assets/maps/campus-map.png` 读取原分辨率的静态 PNG，生产域名与空教室 API 一致。资源为公开 HTTPS，客户端的公共 HTTP 请求无需学校会话。
+
+首次成功下载并解码后，客户端将图片与 HTTP 验证信息一起存入设备。再次进入页面时先展示有效的本地文件，再发起条件 GET。收到 `304`、下载失败或新文件解码失败时继续使用旧图。首次访问失败时，页面提供重试入口。[静态资源发布与许可](static-assets.md)
+
+## 空教室接入设计
+
 Flutter 的入口是 `classroomsProvider`。它从 `SchoolClassroomsDataSource.fetchClassrooms(day)` 获取结果，调用方使用 `ClassroomSchedules`、`CampusBuilding` 和 `ClassroomSchedule`。当前 Provider 和页面限制当日查询。首期只需读取 `today.json`，将来放开日期选择时，可从 `week.json` 以北京时间自然日筛选。
 
 1. 在 services feature 的数据层增加公共 API 适配器，由 Riverpod 提供接口。使用 `date` 和版本索引本地缓存，保留完整时段状态、`collectedAt` 和 `expiresAt`。缓存按目标日期查询，先显示可用缓存，再按进入页面和手动刷新触发条件 GET。每次更新从同一份完整快照构建。

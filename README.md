@@ -1,12 +1,27 @@
 # NEUQ One Data
 
-NEUQ One 的非官方公共数据采集工具。Go 命令按计划从学校教务系统采集空教室数据，生成静态 JSON，由 GitHub Actions 通过 Wrangler 发布到 Cloudflare Pages。Pages 提供 `.pages.dev` 地址。
+NEUQ One 的非官方空教室数据采集与发布服务。Go Collector 从学校教务系统采集数据，生成供 Flutter 客户端读取的静态 JSON。API 包含教室编号、容量、设备分类、目标日期、空闲时段和每个时段的实际采集时间。
 
-第一阶段默认覆盖今天及未来六天，每天六个课节组、工学馆、科技楼和人文楼。默认每小时更新当天数据，并在北京时间每日 00:19 的任务中更新整个日期范围。API 包含教室编号、容量、设备分类、目标日期、空闲时段和每个时段的实际采集时间。发布目录只含三份 JSON 和 Pages 响应头配置。
+默认覆盖今天及未来六天、每天六个课节组，以及工学馆、科技楼和人文楼。发布目录包含三份 JSON 和 Pages 响应头配置。
 
 - [API 文档](docs/api.md)及 [JSON Schema](docs/api-v1.schema.json)
 - [Flutter 接入设计](docs/flutter-integration.md)
 - [协议依据与待验证项](docs/upstream.md)
+
+## 架构与更新频率
+
+**Cloudflare Workers Cron Triggers → GitHub REST API `workflow_dispatch` → GitHub Actions → Go Collector → Cloudflare Pages → Flutter 客户端**
+
+Cloudflare Worker `neuq-one-scheduler` 用加密 Secret `GITHUB_TOKEN` 调用 GitHub REST API，触发默认分支上的 [`classrooms.yml`](.github/workflows/classrooms.yml)。GitHub Actions 构建并运行 Go Collector，校验快照后通过 Wrangler 发布到 Cloudflare Pages。Flutter 客户端从 Pages 生产地址读取公开 API。
+
+Worker 的 Cron 表达式为 `5 * * * *`，按 UTC 调度。每次请求都带 `publish=true` 和 `bootstrap=false`。
+
+| 计划触发时间 | `mode` | 采集范围 |
+| --- | --- | --- |
+| UTC 16:05（北京时间次日 00:05） | `week` | 北京时间当天及未来六天（默认 `NEUQ_DAYS=7`） |
+| 其余每小时第 5 分钟 | `today` | 采集北京时间当天，未来日期从已发布快照按同日期补齐 |
+
+表中的时间是计划触发时间。新快照在 Actions 完成采集、校验和部署后上线。
 
 ## 本地使用
 
@@ -30,9 +45,28 @@ go run ./cmd/collector -verify -output public
 
 ## 配置
 
+### Cloudflare Worker
+
+| 配置项 | 值与用途 |
+| --- | --- |
+| Worker 名称 | `neuq-one-scheduler` |
+| Cron Trigger | `5 * * * *`（UTC） |
+| `GITHUB_TOKEN` | Worker 的加密 Secret。使用限定到目标仓库、具有 **Actions → Read and write** 权限的细粒度 GitHub PAT，由 Worker 通过 `env.GITHUB_TOKEN` 读取 |
+
+### GitHub Actions Secrets
+
+| Secret | 用途 |
+| --- | --- |
+| `NEUQ_USERNAME`、`NEUQ_PASSWORD` | 获授权的教务专用账号凭据 |
+| `CLOUDFLARE_API_TOKEN` | 具有 **Account → Cloudflare Pages → Edit** 权限的部署令牌 |
+| `CLOUDFLARE_ACCOUNT_ID` | Pages 项目所在的 Cloudflare 账户 ID |
+
+### GitHub Actions Variables
+
+采集器也接受下表中的采集参数作为本地进程环境变量。本地采集使用 `NEUQ_USERNAME` 和 `NEUQ_PASSWORD` 注入账号凭据。
+
 | 环境变量 | 默认值与用途 |
 | --- | --- |
-| `NEUQ_USERNAME`、`NEUQ_PASSWORD` | 专用账号凭据，必填 |
 | `NEUQ_USE_WEBVPN` | `false`，直连教务。设置为 `true` 时使用官方 WebVPN 的 CAS 路径 |
 | `NEUQ_WEBVPN_EAMS_URL` | WebVPN 模式必填，从官方门户获授权的教务资源链接中获取以 `/eams/` 结尾的 HTTPS 基址 |
 | `NEUQ_BUILDINGS` | `工学馆,科技楼,人文楼`，中文楼栋名以逗号分隔 |
@@ -46,35 +80,62 @@ go run ./cmd/collector -verify -output public
 | `NEUQ_TODAY_TTL` | `2h`，当天时段从实际采集起的有效期 |
 | `NEUQ_FUTURE_TTL` | `26h`，未来时段从实际采集起的有效期 |
 | `NEUQ_PUBLIC_ORIGIN` | Actions 默认从 `https://<项目名>.pages.dev` 恢复历史。以 Pages 实际生产地址为准 |
-| `NEUQ_COLLECTION_ENABLED` | 设置为 `true` 后启用定时任务 |
 | `CLOUDFLARE_PROJECT` | `neuq-one-data`，Cloudflare Pages 项目名 |
+
+自动调度由 Worker 的 Cron Trigger 控制。旧变量 `NEUQ_COLLECTION_ENABLED` 属于迁移前的 Actions 定时配置，可从 Actions Variables 移除。
 
 查询按日期和时段串行执行。每个时段按 `NEUQ_BUILDINGS` 的配置顺序逐栋查询，默认依次查询工学馆、科技楼、人文楼。楼栋编号缺失时，该楼栋时段保持不可用。部分失败时，同日期已有的有效历史数据可标为 `stale` 并保留原始采集时间。临时网络和服务器错误用指数退避、抖动和 `Retry-After` 控制重试。认证失败、交互验证和访问限制会终止任务。若整体失败、跨北京时间午夜或校验失败，保留上一版线上快照。
 
-## Cloudflare Pages 与 GitHub Actions
+## 部署
+
+### 建立第一个生产快照
 
 1. 在 Cloudflare 控制台的 **Workers & Pages** 创建 Direct Upload 项目。记录项目名和账户 ID。也可运行 `npx wrangler@4.168.0 pages project create neuq-one-data --production-branch main`。生产分支应与 GitHub 默认分支一致。默认 Pages 子域名即可使用。[Direct Upload 创建指南](https://developers.cloudflare.com/pages/get-started/direct-upload/)
 2. 在该账户创建自定义 API Token，权限设为 **Account → Cloudflare Pages → Edit**，资源范围限定为该账户。[Cloudflare CI 权限配置](https://developers.cloudflare.com/pages/how-to/use-direct-upload-with-continuous-integration/)
-3. 在 GitHub **Settings → Secrets and variables → Actions** 添加 `NEUQ_USERNAME`、`NEUQ_PASSWORD`、`CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID` 四项 Secrets。通过 **Variables** 设置项目名、生产地址和获授权的访问方式。Pages 分配带后缀的子域名时，应设置 `NEUQ_PUBLIC_ORIGIN` 为实际生产站点根地址。
-4. 在默认分支打开 **Actions → Collect classrooms → Run workflow**。生产站尚无部署时勾选 `bootstrap`，跳过读取历史。首次可用 `mode=today` 且关闭 `publish`，查看查询和验证日志。确认学校返回的结果和访问条件后，选择 `mode=week` 并启用 `publish`，完成第一次发布。首个生产快照上线后，后续运行保留默认的 `bootstrap=false`。
-5. 在生产域名分别 GET `/api/v1/classrooms/today.json`、`/api/v1/classrooms/week.json`、`/api/v1/status.json`。检查三个接口的 `generatedAt` 相同、当天日期为北京时间、状态字段与房间列表匹配。确认后将 `NEUQ_COLLECTION_ENABLED` 设为 `true`。
-6. 修改 `.github/workflows/classrooms.yml` 的两个 UTC cron 可调整周期。修改每日整周任务的 cron 时，同时更新该工作流识别整周任务的 `MODE` 条件。用 `NEUQ_DAYS` 调整覆盖天数。
+3. 在 GitHub **Settings → Secrets and variables → Actions** 添加上表的四项 Secrets，通过 **Variables** 设置项目名、生产地址和获授权的访问方式。Pages 分配带后缀的子域名时，将 `NEUQ_PUBLIC_ORIGIN` 设为实际生产站点的 HTTPS 根地址。
+4. 在 **Actions → Collect classrooms → Run workflow** 选择仓库默认分支。生产站尚无快照时勾选 `bootstrap`，跳过读取历史。可先用 `mode=today`、`publish=false` 检查采集和校验日志，再用 `mode=week`、`publish=true` 完成首次发布。首个生产快照上线后，后续运行使用 `bootstrap=false`。
+5. 在生产域名分别请求 `/api/v1/classrooms/today.json`、`/api/v1/classrooms/week.json` 和 `/api/v1/status.json`。检查三份响应的 `generatedAt` 一致，`today.json` 的 `date` 为北京时间当天，各时段状态与房间列表匹配。
 
-### 运行限制
+### 启用 Worker 调度
 
-截至 2026-11-25，Cloudflare Free 的 Pages 文档列出 Git 集成每月 500 次构建、每个站点 20,000 个文件、单文件 25 MiB。静态文件请求免费。Direct Upload 在 GitHub 上生成文件，Cloudflare 的 Direct Upload 文档列出文件与大小限制。每小时安排一次最多约 744 次月度部署，应在实际账户核查上传限制及用量。如果账户限制无法容纳默认频率，可调低定时频率。部署因配额失败时生产站保留原快照。见 [Pages 平台限制](https://developers.cloudflare.com/pages/platform/limits/)、[Direct Upload](https://developers.cloudflare.com/pages/get-started/direct-upload/)和 [静态请求计费](https://developers.cloudflare.com/pages/functions/pricing/)。
+1. 在 Cloudflare **Workers & Pages** 创建或打开 `neuq-one-scheduler`。在 **Settings → Variables and Secrets** 中将 GitHub PAT 添加为名为 `GITHUB_TOKEN` 的 **Secret**。PAT 的仓库范围限定为 `LTCpond/neuq-one-data`，并授予 **Actions → Read and write**。 [Workers Secrets](https://developers.cloudflare.com/workers/configuration/secrets/) · [GitHub 工作流触发 API](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event)
+2. 部署带 `scheduled()` 处理器的 Worker。按计划触发时间 `controller.scheduledTime` 选择模式，UTC 16:05 传 `week`，其余时段传 `today`。向 `https://api.github.com/repos/LTCpond/neuq-one-data/actions/workflows/classrooms.yml/dispatches` 发送 JSON `POST` 请求，请求头使用 `Authorization: Bearer <GITHUB_TOKEN>`、`Content-Type: application/json`、`Accept: application/vnd.github+json` 和 `User-Agent: neuq-one-scheduler`。以下是每日整周任务的请求体，`ref` 使用默认分支 `main`。 [Scheduled Handler](https://developers.cloudflare.com/workers/runtime-apis/handlers/scheduled/) · [GitHub REST API 请求头](https://docs.github.com/en/rest/using-the-rest-api/getting-started-with-the-rest-api#headers)
 
-公开仓库使用标准 GitHub 托管 Runner 的计算用量免费。私有仓库按计划计算用量及存储额度。定时任务可能延迟或被丢弃，公开仓库连续 60 天无活动时定时工作流会自动停用，可在 Actions 中重新启用。见 [Actions 计费](https://docs.github.com/en/billing/concepts/product-billing/github-actions)和 [定时触发规则](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)。
+   ```json
+   {
+     "ref": "main",
+     "inputs": {
+       "mode": "week",
+       "publish": true,
+       "bootstrap": false
+     }
+   }
+   ```
 
-### 排查
+3. 在 Worker 的 **Settings → Triggers → Cron Triggers** 添加 `5 * * * *`。首次触发后，在 Cron Events 检查执行结果，在 GitHub Actions 确认 `Collect classrooms` 收到 `workflow_dispatch` 并成功发布，再检查生产 API 的 `generatedAt`。触发器变更最长可能需要 15 分钟传播。 [Cron Triggers 配置与执行记录](https://developers.cloudflare.com/workers/configuration/cron-triggers/)
+
+在 Worker 的 Cron Trigger 中调整自动采集频率，暂停时移除触发器。调整时间时同时核对 Worker 的 `week` 判定和北京时间换日。通过 `NEUQ_DAYS` 调整快照覆盖天数。
+
+## 免费额度与运行限制
+
+截至 2026-11-25，默认计划每天产生 24 次 Worker 调用。每次调用发送一次 GitHub API 请求。按 31 天计，每月最多安排 744 次自动发布，手动运行另计。
+
+- **Cloudflare Workers Free** 每账户可配置 5 个 Cron Trigger，每天 100,000 次请求。每次 Cron 调用有 10 ms CPU 时间和 50 次外部子请求额度，等待网络响应的时间不计入 CPU 时间。 [Workers 平台限制](https://developers.cloudflare.com/workers/platform/limits/)
+- **GitHub** 的公开仓库使用标准 GitHub 托管 Runner 时计算用量免费。私有仓库的计算和存储按账户计划计量。Worker 发出的请求受 GitHub REST API 限流约束。 [Actions 计费](https://docs.github.com/en/billing/concepts/product-billing/github-actions) · [REST API 限流](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)
+- **Cloudflare Pages Free** 的每月 500 次构建额度适用于 Git 集成。此项目由 GitHub Actions 生成静态文件，经 Wrangler Direct Upload 发布。Wrangler 上传限制为 20,000 个文件、单文件 25 MiB。静态文件请求免费且不限次数。按账户实际限制和用量核查发布频率，遇到部署配额限制时可降低 Worker 触发频率，生产域名继续提供上一版快照。 [Pages 平台限制](https://developers.cloudflare.com/pages/platform/limits/) · [Direct Upload](https://developers.cloudflare.com/pages/get-started/direct-upload/) · [静态请求计费](https://developers.cloudflare.com/pages/functions/pricing/)
+
+## 故障排查
 
 | 现象 | 检查项 |
 | --- | --- |
-| 认证失败、要求交互验证或学校拒绝访问 | 检查授权网络、账号状态和学校入口。若 WebVPN 要求设备校验或验证码，停用任务，向学校确认受支持的自动化接入方式 |
+| 到点后 Worker 没有触发记录 | 检查 `neuq-one-scheduler` 的 Cron Trigger 和 Cron Events。按 UTC 核对 `5 * * * *`，为新建或修改的触发器留出传播时间 |
+| Worker 已触发，GitHub Actions 没有对应运行 | 查看 Worker 日志中的 GitHub 响应状态。`401` 检查 `GITHUB_TOKEN` 绑定和令牌有效期。`403` 检查仓库授权和 Actions 写权限。`403` 或 `429` 也要检查限流响应头。`404` 检查令牌能否访问目标仓库及 `classrooms.yml` 是否位于默认分支。`422` 检查 `ref` 和输入值。收到 `2xx` 后到 Actions 查看排队和运行状态 |
+| Actions 已启动但未发布 | 检查工作流使用默认分支，自动运行的输入为 `publish=true`、`bootstrap=false`，并查看采集与校验日志。部署步骤会核对快照日期与北京时间当天是否一致 |
+| 认证失败、要求交互验证或学校拒绝访问 | 检查授权网络、账号状态和学校入口。若 WebVPN 要求设备校验或验证码，暂停 Worker 调度，向学校确认受支持的自动化接入方式 |
 | 楼栋时段查询失败或长期部分可用 | 对照官方界面与完整性日志。日期、时段、分页元数据或楼栋选项变化时，用新的脱敏样本更新解析规则 |
 | 历史快照读取失败 | 检查生产地址、HTTP 状态和 Schema。初次发布时 HTTP 404 表示无历史；其他读取错误会中止以保护线上旧数据 |
 | Wrangler 部署失败 | 检查 Token 权限、账户 ID、项目类型、项目名、生产分支和账户配额。校验通过后可手动重跑一次 |
-| 接口显示旧日期 | 检查最后一次成功部署和 Actions 定时状态。客户端应按响应日期与时段 `expiresAt` 判断可用性 |
+| 接口显示旧日期或未来日期未更新 | 依次检查 Worker 的触发记录、北京时间 00:05 请求的 `mode=week`、Actions 运行结果和 Pages 最后一次成功的生产部署。客户端按响应日期与各时段的 `expiresAt` 判断可用性 |
 
 ## 许可证
 

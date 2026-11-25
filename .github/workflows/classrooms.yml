@@ -2,8 +2,6 @@ name: Collect classrooms
 
 on:
   schedule:
-    - cron: '19 0-15,17-23 * * *'
-    - cron: '19 16 * * *'
   workflow_dispatch:
     inputs:
       mode:

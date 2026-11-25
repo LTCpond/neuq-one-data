@@ -15,6 +15,7 @@ var errScope = errors.New("响应的日期、时段、楼栋或页码与请求�
 type scopeMismatch struct {
 	source, field, expected, actual string
 	page, row                       int
+	shape                           roomShape
 }
 
 func (*scopeMismatch) Error() string { return errScope.Error() }
@@ -34,6 +35,7 @@ func (c *Collector) warnQuery(ctx context.Context, message string, err error, at
 		}
 		if mismatch.row > 0 {
 			attrs = append(attrs, slog.Int("row", mismatch.row))
+			attrs = append(attrs, mismatch.shape.attrs()...)
 		}
 	}
 	c.Log.LogAttrs(ctx, slog.LevelWarn, message, attrs...)

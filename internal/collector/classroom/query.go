@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/LTCpond/neuq-one-data/internal/config"
 	"github.com/LTCpond/neuq-one-data/internal/model"
 	"github.com/PuerkitoBio/goquery"
 )
@@ -66,7 +67,15 @@ var specialRooms = []string{"体育教学场地", "体育馆", "机房", "实验
 var scienceStudy = regexp.MustCompile(`^自主学习室([A-Z])科技楼(.+)$`)
 var noteSuffix = regexp.MustCompile(`[（(]?具体安排以开课部门通知为准[）)]?$`)
 
-type room struct{ name, building, equipment, capacity string }
+type room struct {
+	name, building, equipment, capacity string
+	nameCell, buildingCell              string
+	cellCount                           int
+}
+
+func noticeRoom(name string) bool {
+	return name != "" && noteSuffix.ReplaceAllString(name, "") == ""
+}
 
 func compact(s string) string { return strings.Join(strings.Fields(s), "") }
 
@@ -88,13 +97,34 @@ func stripCampusLabel(value string) string {
 }
 
 func excludedRoom(r room) bool {
-	for _, label := range specialRooms {
-		if strings.Contains(r.name, label) || strings.Contains(r.equipment, label) {
-			return true
-		}
+	if specialRoom(r.name) || specialRoom(r.equipment) {
+		return true
 	}
 	capacity, err := strconv.Atoi(r.capacity)
 	return err == nil && capacity == 0
+}
+
+func specialRoom(value string) bool {
+	for _, label := range specialRooms {
+		if strings.Contains(value, label) {
+			return true
+		}
+	}
+	return false
+}
+
+// 参考项目使用这些楼栋名称及“综合楼”简称；学校选项还可以提供其他楼栋。
+var referencedBuildings = []string{"工学馆", "科技楼", "人文楼", "基础楼", "综合实验楼", "综合楼", "地质楼", "管理楼", "大学会馆", "旧实验楼"}
+
+func readCampusBuildings(doc *goquery.Document) []string {
+	var names []string
+	doc.Find(`select[name="classroom.building.id"] option:not([disabled])`).Each(func(_ int, option *goquery.Selection) {
+		name := stripCampusLabel(option.AttrOr("label", option.Text()))
+		if numberID.MatchString(option.AttrOr("value", "")) && config.BuildingName.MatchString(name) {
+			names = append(names, name)
+		}
+	})
+	return names
 }
 
 func collectRoom(r room, building string) (string, model.RoomDetail, bool) {

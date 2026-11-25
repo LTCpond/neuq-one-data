@@ -100,7 +100,7 @@ func TestResultEchoSelection(t *testing.T) {
 }
 
 func TestBuildingScope(t *testing.T) {
-	c := Collector{Buildings: []string{"工学馆", "科技楼", "人文楼"}}
+	c := Collector{Buildings: []string{"工学馆", "科技楼", "人文楼"}, campusBuildings: []string{"新工学馆"}}
 	for _, tc := range []struct {
 		name, label, requested, capacity, want string
 		source, expected, actual               string
@@ -123,7 +123,7 @@ func TestBuildingScope(t *testing.T) {
 	} {
 		t.Run(fmt.Sprintf("%s_%s_%s", tc.name, tc.label, tc.requested), func(t *testing.T) {
 			r := room{name: tc.name, building: tc.label, capacity: tc.capacity}
-			got, err := c.resolveBuilding(r, tc.requested, 2, 3)
+			got, err := c.resolveBuilding(r, tc.requested, tc.requested != "", 2, 3)
 			if tc.source == "" {
 				if got != tc.want || err != nil {
 					t.Fatalf("得到 %q，错误 %v", got, err)

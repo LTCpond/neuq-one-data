@@ -24,6 +24,7 @@ type grid struct {
 	rows               []room
 	total, size, pages int
 	explicitEmpty      bool
+	buildingConfirmed  bool
 }
 
 func parseGrid(doc *goquery.Document, requested url.Values, page int) (grid, error) {
@@ -35,7 +36,7 @@ func parseGrid(doc *goquery.Document, requested url.Values, page int) (grid, err
 
 	table := doc.Find("table.gridtable")
 	if table.Length() == 0 && page == 1 && emptyResult.MatchString(compact(body)) {
-		if err := checkEcho(scripts, nil, requested, page, false); err != nil {
+		if _, err := checkEcho(scripts, nil, requested, page, false); err != nil {
 			return g, err
 		}
 		return grid{total: 0, pages: 1, explicitEmpty: true}, nil
@@ -48,63 +49,54 @@ func parseGrid(doc *goquery.Document, requested url.Values, page int) (grid, err
 		return g, errResult
 	}
 
-	headers := table.ChildrenFiltered("thead").Find("th, td")
-	name, building, equipment, capacity := 1, 2, 4, 5
-	if headers.Length() != 0 {
-		name, building, equipment, capacity = -1, -1, -1, -1
-		headers.Each(func(i int, cell *goquery.Selection) {
-			switch compact(cell.Text()) {
-			case "名称", "教室", "教室名称", "场地名称", "教室名", "教室编号":
-				name = i
-			case "教学楼", "楼栋", "楼宇", "所在楼栋":
-				building = i
-			case "教室设备配置":
-				equipment = i
-			case "容量":
-				capacity = i
-			}
-		})
-		if name < 0 {
-			return g, errResult
-		}
+	positions, hasHeaders, err := readRoomColumns(table)
+	if err != nil {
+		return g, err
 	}
-	var rowErr error
-	tbody.ChildrenFiltered("tr").EachWithBreak(func(_ int, row *goquery.Selection) bool {
-		cells := row.ChildrenFiltered("td")
-		if cells.Length() == 0 && row.ChildrenFiltered("th").Length() > 0 {
-			return true
+	rows := tbody.ChildrenFiltered("tr")
+	var layout gridLayout
+	for i, row := range rows.EachIter() {
+		cells := row.ChildrenFiltered("td, th")
+		columns, err := layout.expand(cells, rows.Length()-i)
+		if err != nil {
+			return g, err
+		}
+		if row.ChildrenFiltered("td").Length() == 0 {
+			if cells.Length() == 0 {
+				return g, errResult
+			}
+			continue
 		}
 		if cells.Length() == 1 && emptyResult.MatchString(compact(cells.Text())) {
 			g.explicitEmpty = true
-			return true
+			continue
 		}
-		field := func(i int) string {
-			if i < 0 || i >= cells.Length() {
-				return ""
-			}
-			return compact(cells.Eq(i).Text())
-		}
-		r := room{name: field(name), building: field(building), equipment: field(equipment), capacity: field(capacity)}
-		if headers.Length() == 0 {
+		name, building := columns.cell(positions.name), columns.cell(positions.building)
+		r := room{name: name.value(), building: building.value(), equipment: columns.cell(positions.equipment).value(),
+			capacity: columns.cell(positions.capacity).value(), nameCell: name.kind(), buildingCell: building.kind(),
+			cellCount: cells.Length()}
+		if !hasHeaders {
 			if _, err := strconv.Atoi(r.capacity); err != nil {
-				if _, err := strconv.Atoi(field(3)); err == nil {
-					r.capacity = field(3)
+				legacy := columns.cell(3).value()
+				if _, err := strconv.Atoi(legacy); err == nil {
+					r.capacity = legacy
 				}
 			}
 		}
-		if r.name == "" {
-			rowErr = errResult
-			return false
+		if r.name == "" && cells.Length() <= 2 {
+			cells.Each(func(_ int, cell *goquery.Selection) {
+				if text := compact(cell.Text()); noticeRoom(text) {
+					r.name = text
+				}
+			})
 		}
 		g.rows = append(g.rows, r)
-		return true
-	})
-	if rowErr != nil || (g.explicitEmpty && len(g.rows) > 0) {
+	}
+	if g.explicitEmpty && len(g.rows) > 0 {
 		return g, errResult
 	}
 
 	g.total, g.pages = -1, -1
-	var err error
 	g.total, err = matchCount(totals, body)
 	if err != nil {
 		return g, err
@@ -141,7 +133,8 @@ func parseGrid(doc *goquery.Document, requested url.Values, page int) (grid, err
 			pageConfirmed = true
 		}
 	}
-	if err := checkEcho(scripts, paging, requested, page, pageConfirmed); err != nil {
+	g.buildingConfirmed, err = checkEcho(scripts, paging, requested, page, pageConfirmed)
+	if err != nil {
 		return g, err
 	}
 
@@ -161,7 +154,7 @@ func parseGrid(doc *goquery.Document, requested url.Values, page int) (grid, err
 
 var echoFields = []string{"cycleTime.dateBegin", "cycleTime.dateEnd", "timeBegin", "timeEnd", "classroom.building.id", "pageNo"}
 
-func checkEcho(scripts []string, paging *regexp.Regexp, requested url.Values, page int, pageConfirmed bool) error {
+func checkEcho(scripts []string, paging *regexp.Regexp, requested url.Values, page int, pageConfirmed bool) (bool, error) {
 	var gridEchoes, gridPartial, loose []url.Values
 	for _, script := range scripts {
 		var resultPage []int
@@ -195,6 +188,7 @@ func checkEcho(scripts []string, paging *regexp.Regexp, requested url.Values, pa
 	if len(candidates) == 0 {
 		candidates = append(gridPartial, loose...)
 	}
+	buildingConfirmed := false
 	for _, returned := range candidates {
 		for _, key := range echoFields {
 			observed, present := returned[key]
@@ -207,13 +201,14 @@ func checkEcho(scripts []string, paging *regexp.Regexp, requested url.Values, pa
 				expected = strconv.Itoa(page)
 			}
 			if len(observed) == 1 && sameEcho(key, expected, observed[0]) {
+				buildingConfirmed = buildingConfirmed || (key == "classroom.building.id" && expected != "")
 				continue
 			}
-			return &scopeMismatch{source: "paramstring", field: key, expected: echoDiagnostic(key, []string{expected}),
+			return false, &scopeMismatch{source: "paramstring", field: key, expected: echoDiagnostic(key, []string{expected}),
 				actual: echoDiagnostic(key, observed), page: page}
 		}
 	}
-	return nil
+	return buildingConfirmed, nil
 }
 
 // 单独解析与范围校验有关的字段。其他字段可能包含账号或任意表单文本。

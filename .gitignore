@@ -1,0 +1,9 @@
+/.work/
+/public/
+/collector
+/collector.exe
+/.collector.lock
+/.neuq-stage-*
+.env
+.env.*
+!.env.example

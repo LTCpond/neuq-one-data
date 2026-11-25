@@ -1,0 +1,311 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NEUQ One Data 空教室 API v1",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/Today"
+    },
+    {
+      "$ref": "#/$defs/Week"
+    },
+    {
+      "$ref": "#/$defs/Status"
+    }
+  ],
+  "$defs": {
+    "Date": {
+      "type": "string",
+      "format": "date",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "BeijingTime": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "\\+08:00$"
+    },
+    "Header": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "timezone",
+        "source",
+        "generatedAt"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "timezone": {
+          "const": "Asia/Shanghai"
+        },
+        "source": {
+          "const": "NEUQ 教务系统"
+        },
+        "generatedAt": {
+          "$ref": "#/$defs/BeijingTime"
+        }
+      }
+    },
+    "RoomName": {
+      "type": "string",
+      "pattern": "^[A-Z]?[0-9]{2,5}[A-Z]?(?:-[A-Z0-9]{1,4}){0,2}(?:自习室[A-Z])?$"
+    },
+    "RoomDetail": {
+      "type": "object",
+      "required": [
+        "capacity",
+        "equipment"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "capacity": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 3000
+        },
+        "equipment": {
+          "enum": [
+            null,
+            "普通教室",
+            "标准教室",
+            "多媒体教室",
+            "多媒体大教室",
+            "多媒体中教室",
+            "多媒体小教室",
+            "录播教室",
+            "普通多媒体教室",
+            "阶梯教室"
+          ]
+        }
+      }
+    },
+    "Slot": {
+      "type": "object",
+      "required": [
+        "status",
+        "rooms",
+        "roomDetails",
+        "collectedAt",
+        "expiresAt"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": [
+            "success",
+            "stale",
+            "unavailable"
+          ]
+        },
+        "rooms": {},
+        "roomDetails": {},
+        "collectedAt": {},
+        "expiresAt": {}
+      },
+      "if": {
+        "properties": {
+          "status": {
+            "const": "unavailable"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "rooms": {
+            "type": "null"
+          },
+          "roomDetails": {
+            "type": "null"
+          },
+          "collectedAt": {
+            "type": "null"
+          },
+          "expiresAt": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "rooms": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/$defs/RoomName"
+            }
+          },
+          "roomDetails": {
+            "type": "object",
+            "propertyNames": {
+              "$ref": "#/$defs/RoomName"
+            },
+            "additionalProperties": {
+              "$ref": "#/$defs/RoomDetail"
+            }
+          },
+          "collectedAt": {
+            "$ref": "#/$defs/BeijingTime"
+          },
+          "expiresAt": {
+            "$ref": "#/$defs/BeijingTime"
+          }
+        }
+      }
+    },
+    "Periods": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "1-2",
+        "3-4",
+        "5-6",
+        "7-8",
+        "9-10",
+        "11-12"
+      ],
+      "properties": {
+        "1-2": {
+          "$ref": "#/$defs/Slot"
+        },
+        "3-4": {
+          "$ref": "#/$defs/Slot"
+        },
+        "5-6": {
+          "$ref": "#/$defs/Slot"
+        },
+        "7-8": {
+          "$ref": "#/$defs/Slot"
+        },
+        "9-10": {
+          "$ref": "#/$defs/Slot"
+        },
+        "11-12": {
+          "$ref": "#/$defs/Slot"
+        }
+      }
+    },
+    "Day": {
+      "type": "object",
+      "required": [
+        "date",
+        "updatedAt",
+        "complete",
+        "buildings"
+      ],
+      "properties": {
+        "date": {
+          "$ref": "#/$defs/Date"
+        },
+        "updatedAt": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/BeijingTime"
+            }
+          ]
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "buildings": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 20,
+          "propertyNames": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 16
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/Periods"
+          }
+        }
+      }
+    },
+    "Today": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Header"
+        },
+        {
+          "$ref": "#/$defs/Day"
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "Week": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Header"
+        }
+      ],
+      "required": [
+        "days"
+      ],
+      "properties": {
+        "days": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 14,
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/Day"
+              }
+            ],
+            "unevaluatedProperties": false
+          }
+        }
+      },
+      "unevaluatedProperties": false
+    },
+    "Status": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/Header"
+        }
+      ],
+      "required": [
+        "date",
+        "state",
+        "todayComplete",
+        "freshSlots",
+        "staleSlots",
+        "unavailableSlots"
+      ],
+      "properties": {
+        "date": {
+          "$ref": "#/$defs/Date"
+        },
+        "state": {
+          "enum": [
+            "complete",
+            "partial",
+            "unavailable"
+          ]
+        },
+        "todayComplete": {
+          "type": "boolean"
+        },
+        "freshSlots": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "staleSlots": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unavailableSlots": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "unevaluatedProperties": false
+    }
+  }
+}

@@ -1,0 +1,5 @@
+/api/v1/*
+  Cache-Control: public, max-age=60, must-revalidate
+  Content-Type: application/json; charset=utf-8
+  X-Content-Type-Options: nosniff
+  Access-Control-Allow-Origin: *

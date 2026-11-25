@@ -59,7 +59,7 @@ func TestWebVPNOfficialCAS(t *testing.T) {
 		}
 	})
 	result := c.Run(t.Context(), time.Now(), 1, 1)
-	if result.Failure != nil || signIns.Load() != 1 || searches.Load() != 6 || result.SuccessfulSlots != 18 {
+	if result.Failure != nil || signIns.Load() != 1 || searches.Load() != 18 || result.SuccessfulSlots != 18 {
 		t.Fatalf("模拟 WebVPN 采集失败：%v，登录 %d 次，查询 %d 次", result.Failure, signIns.Load(), searches.Load())
 	}
 }

@@ -28,7 +28,7 @@ func TestGridLayoutPreservesRawRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := parseGrid(doc, query(date, 1, 1, ""), 1)
+	g, err := parseGrid(doc, query(date, 1, 1, "1"), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,23 +45,21 @@ func TestGridLayoutPreservesRawRows(t *testing.T) {
 	}
 }
 
-func TestBulkFiltersConfirmedRowsAndChecksAllPages(t *testing.T) {
-	// 真实样本包含空教学楼、学校本部、零容量的活动教室，
-	// 以及空教学楼但容量为 30 的体育教学场地。
+func TestScopedPaginationCountsFilteredRows(t *testing.T) {
 	const firstRows = `<tr><td>1</td><td>工学馆201</td><td>工学馆</td><td>学校本部</td><td>普通教室</td><td>80</td></tr>
- <tr><td>2</td><td>综合楼活动室</td><td></td><td>学校本部</td><td>活动教室</td><td>0</td></tr>
+ <tr><td>2</td><td>活动场地</td><td></td><td>学校本部</td><td>活动教室</td><td>0</td></tr>
  <tr><td>3</td><td>运动场</td><td></td><td>学校本部</td><td>体育教学场地</td><td>30</td></tr>`
-	const externalRows = `<tr><td>4</td><td>基础楼201</td><td></td><td>学校本部</td><td>普通教室</td><td>60</td></tr>
- <tr><td>5</td><td>教学实践楼101</td><td></td><td>学校本部</td><td>普通教室</td><td>45</td></tr>`
+	const lastRows = `<tr><td>4</td><td>工学馆202</td><td></td><td>学校本部</td><td>普通教室</td><td>60</td></tr>
+ <tr><td>5</td><td>工学馆203</td><td>工学馆</td><td>学校本部</td><td>普通教室</td><td>45</td></tr>`
 	for _, tc := range []struct {
 		name, secondRows string
 		want             error
 	}{
-		{"all included in page totals", externalRows, nil},
-		{"one filtered row missing", `<tr><td>4</td><td>基础楼201</td><td></td></tr>`, errResult},
+		{"all included in page totals", lastRows, nil},
+		{"one filtered row missing", `<tr><td>4</td><td>工学馆202</td><td>工学馆</td></tr>`, errResult},
 		{"duplicates among filtered rows", firstRows[strings.Index(firstRows, `<tr><td>2`):], errResult},
-		{"ordinary room without building", `<tr><td>4</td><td>基础楼201</td><td></td></tr><tr><td>5</td><td>208</td><td></td></tr>`, errScope},
-		{"unrecognized text in building column", `<tr><td>4</td><td>基础楼201</td><td></td></tr><tr><td>5</td><td>208</td><td>未知</td></tr>`, errScope},
+		{"ordinary room without building", `<tr><td>4</td><td>工学馆202</td><td>工学馆</td></tr><tr><td>5</td><td>208</td><td></td></tr>`, errScope},
+		{"unrecognized text in building column", `<tr><td>4</td><td>工学馆202</td><td>工学馆</td></tr><tr><td>5</td><td>208</td><td>未知</td></tr>`, errScope},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var requests atomic.Int32
@@ -73,13 +71,13 @@ func TestBulkFiltersConfirmedRowsAndChecksAllPages(t *testing.T) {
 				}
 				writeGrid(w, firstRows, 1, 3, 5)
 			}))
-			c.campusBuildings = []string{"教学实践楼"}
-			got, err := c.fetch(t.Context(), date, 1, "")
+			c.ids = map[string]string{"工学馆": "1"}
+			got, err := c.fetch(t.Context(), date, 1, "工学馆")
 			if !errors.Is(err, tc.want) || requests.Load() != 2 {
 				t.Fatalf("原始分页校验失败：%v，%d 个请求", err, requests.Load())
 			}
-			if tc.want == nil && (len(got["工学馆"]) != 1 || len(got["科技楼"]) != 0 || len(got["人文楼"]) != 0) {
-				t.Fatal("非目标楼栋或特殊场地进入了结果")
+			if tc.want == nil && len(got) != 3 {
+				t.Fatal("分页结果包含了本应过滤的场地")
 			}
 			if tc.want != nil && got != nil {
 				t.Fatal("不完整的数据不应返回已确认的结果")
@@ -88,7 +86,7 @@ func TestBulkFiltersConfirmedRowsAndChecksAllPages(t *testing.T) {
 	}
 }
 
-func TestUnresolvedOrdinaryRoomTriggersScopedFallback(t *testing.T) {
+func TestUnresolvedOrdinaryRoomRemainsUnavailable(t *testing.T) {
 	const mockCell = "mock-private-cell-value"
 	c := newCollector(t, false, time.Second, ordinaryEAMS(func(w http.ResponseWriter, r *http.Request) {
 		if r.FormValue("timeBegin") != "1" {
@@ -96,10 +94,8 @@ func TestUnresolvedOrdinaryRoomTriggersScopedFallback(t *testing.T) {
 			return
 		}
 		switch r.FormValue("classroom.building.id") {
-		case "":
-			writeGrid(w, `<tr><td>1</td><td>工程用房</td><td></td><td>学校本部</td><td>`+mockCell+`</td><td>40</td></tr>`, 1, 100, 1)
 		case "7":
-			writeGrid(w, `<tr><td>1</td><td>201</td><td></td><td>学校本部</td><td>普通教室</td><td>60</td></tr>`, 1, 100, 1)
+			writeGrid(w, `<tr><td>1</td><td>工程用房</td><td></td><td>学校本部</td><td>`+mockCell+`</td><td>40</td></tr>`, 1, 100, 1)
 		default:
 			fmt.Fprint(w, "<p>没有查询结果</p>")
 		}
@@ -113,8 +109,7 @@ func TestUnresolvedOrdinaryRoomTriggersScopedFallback(t *testing.T) {
 		t.Fatal("归属不明的普通教室被误判为已确认结果")
 	}
 	output := logs.String()
-	for _, field := range []string{`"blank_building_rows":1`, `"unresolved_rows":1`, `"building_cell":"blank"`,
-		`"cell_count":6`, `"equipment_kind":"unrecognized"`, `"capacity_kind":"positive"`} {
+	for _, field := range []string{`"building_cell":"blank"`, `"cell_count":6`, `"equipment_kind":"unrecognized"`, `"capacity_kind":"positive"`} {
 		if !strings.Contains(output, field) {
 			t.Fatalf("缺少诊断字段 %s", field)
 		}
@@ -145,7 +140,7 @@ func TestScopedRoomNumberRequiresConfirmedBuilding(t *testing.T) {
 				t.Fatalf("无楼栋编号的处理错误：%v", err)
 			}
 			if tc.want == nil {
-				if _, ok := got["工学馆"]["201"]; !ok {
+				if _, ok := got["201"]; !ok {
 					t.Fatal("已获响应楼栋证据的房间缺失")
 				}
 			}

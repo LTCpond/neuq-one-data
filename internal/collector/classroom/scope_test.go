@@ -23,13 +23,12 @@ func TestResultEchoSelection(t *testing.T) {
 	for _, tc := range []struct {
 		name, scripts                   string
 		page                            int
-		buildingID                      string
 		source, field, expected, actual string
 	}{
 		{name: "ignore defaults and unrelated grid",
 			scripts: script("cycleTime.dateBegin=2026-11-24&classroom.building.id=7", "") +
 				script("timeBegin=9&timeEnd=10", "page_other.pageInfo(1,100,1);") +
-				script(strings.ReplaceAll(correct, "&", "&amp;")+"&amp;classroom.building.id=&amp;pageNo=&amp;classroom.name=%ZZ",
+				script(strings.ReplaceAll(correct, "&", "&amp;")+"&amp;classroom.building.id=1&amp;pageNo=&amp;classroom.name=%ZZ",
 					"page_grid123.pageInfo(1,100,1);"), page: 1},
 		{name: "separate two grid echoes in a shared script",
 			scripts: `<script>var _paramstring = 'timeBegin=9&timeEnd=10';
@@ -60,11 +59,11 @@ func TestResultEchoSelection(t *testing.T) {
 		{name: "percent encoding and numeric period formatting",
 			scripts: script("cycleTime.dateBegin=%202026%2D11%2D25%20&timeBegin=01&timeEnd=02&pageNo=", ""), page: 1},
 		{name: "empty scoped ID is a mismatch",
-			scripts: script(correct+"&classroom.building.id=", ""), page: 1, buildingID: "1",
+			scripts: script(correct+"&classroom.building.id=", ""), page: 1,
 			source: "paramstring", field: "classroom.building.id", expected: "1", actual: "<空>"},
-		{name: "bulk ID must be blank if returned",
+		{name: "zero building ID mismatches the requested ID",
 			scripts: script(correct+"&classroom.building.id=0", ""), page: 1,
-			source: "paramstring", field: "classroom.building.id", expected: "<空>", actual: "0"},
+			source: "paramstring", field: "classroom.building.id", expected: "1", actual: "0"},
 		{name: "duplicate scope fields are rejected",
 			scripts: script(correct+"&timeBegin=2", ""), page: 1,
 			source: "paramstring", field: "timeBegin", expected: "1", actual: "<重复字段>"},
@@ -82,7 +81,7 @@ func TestResultEchoSelection(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = parseGrid(doc, query(date, 1, tc.page, tc.buildingID), tc.page)
+			_, err = parseGrid(doc, query(date, 1, tc.page, "1"), tc.page)
 			if tc.field == "" {
 				if err != nil {
 					t.Fatal(err)
@@ -105,25 +104,23 @@ func TestBuildingScope(t *testing.T) {
 		name, label, requested, capacity, want string
 		source, expected, actual               string
 	}{
-		{name: "201", label: "学校本部－工 学 馆", want: "工学馆"},
+		{name: "201", label: "学校本部－工 学 馆", requested: "工学馆", want: "工学馆"},
 		{name: "【校本部】工学馆203", label: "工学馆（学校本部）", requested: "工学馆", want: "工学馆"},
-		{name: "校本部：工学馆203", label: "校本部（工学馆）", want: "工学馆"},
-		{name: "科技楼6026", want: "科技楼"},
-		{name: "自主学习室A科技楼6026-A", want: "科技楼"},
-		{name: "体育教学场地", want: ""},
-		{name: "201", capacity: "0", want: ""},
+		{name: "校本部：工学馆203", label: "校本部（工学馆）", requested: "工学馆", want: "工学馆"},
+		{name: "科技楼6026", requested: "科技楼", want: "科技楼"},
+		{name: "自主学习室A科技楼6026-A", requested: "科技楼", want: "科技楼"},
+		{name: "体育教学场地", requested: "工学馆"},
+		{name: "201", requested: "工学馆", capacity: "0"},
 		{name: "201", requested: "工学馆", want: "工学馆"},
-		{name: "201", source: "grid.building", expected: "<可识别楼栋>", actual: "<空>"},
 		{name: "科技楼203", label: "学校本部-科技楼", requested: "工学馆", source: "grid.building", expected: "工学馆", actual: "科技楼"},
 		{name: "科技楼203", label: "学校本部-工学馆", requested: "工学馆", source: "grid.roomName", expected: "工学馆", actual: "科技楼"},
 		{name: "科技楼机房", requested: "工学馆", source: "grid.roomName", expected: "工学馆", actual: "科技楼"},
-		{name: "科技楼203", label: "学校本部-工学馆", source: "grid.building", expected: "科技楼", actual: "工学馆"},
-		{name: "新工学馆203", label: "新工学馆", want: "新工学馆"},
-		{name: "工学馆203", label: "其他校区-工学馆", source: "grid.building", expected: "工学馆", actual: "<已脱敏：未识别楼栋>"},
+		{name: "新工学馆203", requested: "工学馆", source: "grid.roomName", expected: "工学馆", actual: "<已脱敏：未识别楼栋>"},
+		{name: "工学馆203", label: "其他校区-工学馆", requested: "工学馆", source: "grid.building", expected: "工学馆", actual: "<已脱敏：未识别楼栋>"},
 	} {
 		t.Run(fmt.Sprintf("%s_%s_%s", tc.name, tc.label, tc.requested), func(t *testing.T) {
 			r := room{name: tc.name, building: tc.label, capacity: tc.capacity}
-			got, err := c.resolveBuilding(r, tc.requested, tc.requested != "", 2, 3)
+			got, err := c.resolveBuilding(r, tc.requested, true, 2, 3)
 			if tc.source == "" {
 				if got != tc.want || err != nil {
 					t.Fatalf("得到 %q，错误 %v", got, err)
@@ -139,19 +136,20 @@ func TestBuildingScope(t *testing.T) {
 	}
 }
 
-func TestBulkGridUsesNormalizedBuildingAndResultEcho(t *testing.T) {
+func TestScopedGridUsesNormalizedBuildingAndResultEcho(t *testing.T) {
 	c := newCollector(t, false, time.Second, ordinaryEAMS(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `<table id="grid123" class="gridtable"><tbody>
    <tr><td>1</td><td>【学校本部】 工学馆 201</td><td>学校本部－工学馆</td></tr>
    <tr><td>2</td><td>体育教学场地</td><td></td></tr>
    </tbody></table>
    <script>var _paramstring = 'classroom.building.id=7&cycleTime.dateBegin=2026-11-24';</script>
-   <script>var _paramstring = 'timeBegin=1&timeEnd=2&classroom.building.id=';
+   <script>var _paramstring = 'timeBegin=1&timeEnd=2&classroom.building.id=1';
     page_grid123.pageInfo(1,100,2);</script>`)
 	}))
-	got, err := c.fetch(t.Context(), date, 1, "")
-	if _, ok := got["工学馆"]["201"]; err != nil || !ok {
-		t.Fatalf("全校查询结果 %#v，错误 %v", got, err)
+	c.ids = map[string]string{"工学馆": "1"}
+	got, err := c.fetch(t.Context(), date, 1, "工学馆")
+	if _, ok := got["201"]; err != nil || !ok {
+		t.Fatalf("楼栋查询结果 %#v，错误 %v", got, err)
 	}
 	doc, err := auth.Document(`<select name="classroom.building.id">
   <option value="1">学校本部／工学馆</option>
@@ -171,7 +169,7 @@ func TestScopeLogsRedactUntrustedValues(t *testing.T) {
 	const mockSecret = "mock-not-for-log-32abcd"
 	c := newCollector(t, false, time.Second, ordinaryEAMS(func(w http.ResponseWriter, r *http.Request) {
 		switch r.FormValue("classroom.building.id") {
-		case "":
+		case "7":
 			fmt.Fprintf(w, `<p>没有查询结果</p><script>var _paramstring='timeBegin=%s&token=%s';</script>`, mockSecret, mockSecret)
 		case "1":
 			fmt.Fprintf(w, `<table class="gridtable"><tbody><tr><td>1</td><td>工学馆201</td><td>%s</td></tr></tbody></table>共1条`, mockSecret)
@@ -182,8 +180,8 @@ func TestScopeLogsRedactUntrustedValues(t *testing.T) {
 	var logs bytes.Buffer
 	c.Log = slog.New(slog.NewJSONHandler(&logs, nil))
 	result := c.Run(t.Context(), time.Now(), 1, 1)
-	if result.SuccessfulSlots != 12 {
-		t.Fatalf("补查结果 %d", result.SuccessfulSlots)
+	if result.SuccessfulSlots != 6 {
+		t.Fatalf("成功时段 %d", result.SuccessfulSlots)
 	}
 	output := logs.String()
 	for _, snippet := range []string{

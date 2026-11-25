@@ -82,12 +82,12 @@ func Load() (Config, error) {
 		return c, fmt.Errorf("NEUQ_BUILDINGS 最多支持 20 栋")
 	}
 	c.Days = number("NEUQ_DAYS", 7, 1, 14)
-	c.MaxRequests = number("NEUQ_MAX_REQUESTS", 120, 1, 250)
+	c.MaxRequests = number("NEUQ_MAX_REQUESTS", 200, 1, 250)
 	c.MaxPages = number("NEUQ_MAX_PAGES", 4, 1, 10)
 	c.Retries = number("NEUQ_RETRIES", 2, 0, 4)
 	c.Delay = duration("NEUQ_REQUEST_DELAY", 2*time.Second, time.Second, time.Minute)
 	c.Timeout = duration("NEUQ_REQUEST_TIMEOUT", 20*time.Second, time.Second, time.Minute)
-	c.TaskTimeout = duration("NEUQ_TASK_TIMEOUT", 8*time.Minute, time.Minute, 12*time.Minute)
+	c.TaskTimeout = duration("NEUQ_TASK_TIMEOUT", 12*time.Minute, time.Minute, 12*time.Minute)
 	c.TodayTTL = duration("NEUQ_TODAY_TTL", 2*time.Hour, time.Hour, 24*time.Hour)
 	c.FutureTTL = duration("NEUQ_FUTURE_TTL", 26*time.Hour, time.Hour, 72*time.Hour)
 	return c, configErr

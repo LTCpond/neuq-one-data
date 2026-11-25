@@ -18,9 +18,6 @@ func query(date string, start, page int, buildingID string) url.Values {
 		"cycleTime.dateBegin": {date}, "cycleTime.dateEnd": {date}, "roomApplyTimeType": {"0"},
 		"timeBegin": {strconv.Itoa(start)}, "timeEnd": {strconv.Itoa(start + 1)},
 	}
-	if buildingID == "" {
-		form.Set("pageSize", "1000")
-	}
 	if page > 1 {
 		form.Set("pageNo", strconv.Itoa(page))
 	}
@@ -113,7 +110,7 @@ func specialRoom(value string) bool {
 	return false
 }
 
-// 参考项目使用这些楼栋名称及“综合楼”简称；学校选项还可以提供其他楼栋。
+// 用校内已知楼栋和“综合楼”简称识别按楼栋查询中的错楼栋结果。
 var referencedBuildings = []string{"工学馆", "科技楼", "人文楼", "基础楼", "综合实验楼", "综合楼", "地质楼", "管理楼", "大学会馆", "旧实验楼"}
 
 func readCampusBuildings(doc *goquery.Document) []string {

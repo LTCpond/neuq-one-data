@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -87,26 +88,27 @@ func TestQueryResult(t *testing.T) {
 		if r.Method != "POST" || r.Header.Get("X-Requested-With") != "XMLHttpRequest" ||
 			r.FormValue("cycleTime.dateBegin") != date || r.FormValue("cycleTime.dateEnd") != date ||
 			r.FormValue("timeBegin") != "3" || r.FormValue("timeEnd") != "4" ||
-			r.FormValue("roomApplyTimeType") != "0" || r.FormValue("pageSize") != "1000" {
+			r.FormValue("roomApplyTimeType") != "0" || r.FormValue("classroom.building.id") != "7" ||
+			r.Form.Has("pageSize") || r.Form.Has("pageNo") {
 			t.Error("错误的教务查询参数")
 		}
 		fmt.Fprint(w, html)
 	}))
-	got, err := c.fetch(t.Context(), date, 3, "")
+	c.ids = map[string]string{"科技楼": "7"}
+	got, err := c.fetch(t.Context(), date, 3, "科技楼")
 	if err != nil {
 		t.Fatal(err)
 	}
-	engineering, science, humanities := got["工学馆"], got["科技楼"], got["人文楼"]
-	if len(engineering) != 1 || engineering["201"].Capacity == nil || *engineering["201"].Capacity != 80 ||
-		len(science) != 1 || science["6026-A自习室A"].Equipment == nil || *science["6026-A自习室A"].Equipment != "录播教室" ||
-		len(humanities) != 1 || humanities["302"].Capacity == nil || humanities["302"].Equipment != nil {
+	if len(got) != 3 || got["201"].Capacity == nil || *got["201"].Capacity != 80 ||
+		got["6026-A自习室A"].Equipment == nil || *got["6026-A自习室A"].Equipment != "录播教室" ||
+		got["302"].Capacity == nil || got["302"].Equipment != nil {
 		t.Fatalf("错误的规范化结果 %#v", got)
 	}
 }
 
 func TestPaginationAndEmpty(t *testing.T) {
 	fragment := fixture(t, "free-rooms-fragment.html")
-	const row = `<tr><td>1</td><td>工学馆201</td><td>工学馆</td><td>校本部</td><td>普通教室</td><td>80</td></tr>`
+	const row = `<tr><td>1</td><td>科技楼201</td><td>科技楼</td><td>校本部</td><td>普通教室</td><td>80</td></tr>`
 	grid := func(row string) string {
 		return `<table id="grid123" class="gridtable"><tbody>` + row + `</tbody></table>`
 	}
@@ -134,34 +136,42 @@ func TestPaginationAndEmpty(t *testing.T) {
 					fmt.Fprint(w, tc.first)
 				}
 			}))
-			got, err := c.fetch(t.Context(), date, 1, "")
+			c.ids = map[string]string{"科技楼": "7"}
+			got, err := c.fetch(t.Context(), date, 1, "科技楼")
 			if (err != nil) != tc.failed {
 				t.Fatalf("结果 %#v，错误 %v", got, err)
 			}
 			if tc.name == "pagination and AJAX fragment" {
-				capacity := got["科技楼"]["203"].Capacity
-				if len(got["工学馆"]) != 1 || capacity == nil || *capacity != 45 {
+				capacity := got["203"].Capacity
+				if len(got) != 2 || got["201"].Capacity == nil || capacity == nil || *capacity != 45 {
 					t.Fatalf("分页数据错误 %#v", got)
 				}
 			}
-			if strings.HasPrefix(tc.name, "empty") && (got["工学馆"] == nil || len(got["工学馆"]) != 0) {
+			if strings.HasPrefix(tc.name, "empty") && (got == nil || len(got) != 0) {
 				t.Fatalf("空结果应返回空集合 %#v", got)
 			}
 		})
 	}
 }
 
-func TestCollectOnlyFailedPeriodByBuilding(t *testing.T) {
+func TestCollectBuildingsInOrderWithNonemptyIDs(t *testing.T) {
 	var mutex sync.Mutex
 	var queries []string
 	c := newCollector(t, false, time.Second, ordinaryEAMS(func(w http.ResponseWriter, r *http.Request) {
-		start, building := r.FormValue("timeBegin"), r.FormValue("classroom.building.id")
+		start, building, page := r.FormValue("timeBegin"), r.FormValue("classroom.building.id"), r.FormValue("pageNo")
+		if building == "" {
+			t.Error("采集发送了楼栋编号为空的请求")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		mutex.Lock()
-		queries = append(queries, start+":"+building)
+		queries = append(queries, start+":"+building+":"+page)
 		mutex.Unlock()
 		switch {
-		case start == "3" && building == "":
-			fmt.Fprint(w, `<p>分页异常</p>`)
+		case start == "1" && building == "1" && page == "":
+			writeGrid(w, `<tr><td>1</td><td>工学馆201</td><td>工学馆</td></tr>`, 1, 1, 2)
+		case start == "1" && building == "1" && page == "2":
+			writeGrid(w, `<tr><td>2</td><td>工学馆202</td><td>工学馆</td></tr>`, 2, 1, 2)
 		case start == "3" && building == "7":
 			fmt.Fprint(w, `<table class="gridtable"><tbody><tr><td>1</td><td>工学馆201</td><td>工学馆</td></tr></tbody></table>共1条`)
 		default:
@@ -171,12 +181,48 @@ func TestCollectOnlyFailedPeriodByBuilding(t *testing.T) {
 	result := c.Run(t.Context(), time.Date(2026, 11, 24, 16, 0, 0, 0, time.UTC), 7, 1)
 	mutex.Lock()
 	defer mutex.Unlock()
-	expected := []string{"1:", "3:", "3:1", "3:7", "3:9", "5:", "7:", "9:", "11:"}
+	expected := []string{"1:1:", "1:1:2", "1:7:", "1:9:"}
+	for start := 3; start <= 11; start += 2 {
+		for _, id := range []string{"1", "7", "9"} {
+			expected = append(expected, strconv.Itoa(start)+":"+id+":")
+		}
+	}
 	if !slices.Equal(queries, expected) || result.SuccessfulSlots != 17 || result.Days[0].Date != date ||
+		!slices.Equal(result.Days[0].Buildings["工学馆"]["1-2"].Rooms, []string{"201", "202"}) ||
 		result.Days[0].Buildings["科技楼"]["3-4"].Status != model.Unavailable ||
 		result.Days[0].Buildings["工学馆"]["3-4"].Status != model.Success ||
 		result.Days[1].Buildings["人文楼"]["1-2"].Status != model.Unavailable {
-		t.Fatalf("补查结果不匹配，查询 %v，成功 %d，错误 %v", queries, result.SuccessfulSlots, result.Failure)
+		t.Fatalf("逐栋采集结果不匹配，查询 %v，成功 %d，错误 %v", queries, result.SuccessfulSlots, result.Failure)
+	}
+}
+
+func TestCollectSkipsBuildingsWithoutConfirmedID(t *testing.T) {
+	var searches atomic.Int32
+	defaultHandler := ordinaryEAMS(func(w http.ResponseWriter, r *http.Request) {
+		searches.Add(1)
+		id := r.FormValue("classroom.building.id")
+		if id != "1" && id != "9" {
+			t.Errorf("发送了未确认的楼栋编号 %q", id)
+		}
+		fmt.Fprint(w, "<p>没有查询结果</p>")
+	})
+	c := newCollector(t, false, time.Second, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/eams/"+auth.FormPath {
+			fmt.Fprint(w, `<select name="classroom.building.id">
+				<option value="1">工学馆</option><option value="">科技楼</option><option value="9">人文楼</option>
+			</select>`)
+			return
+		}
+		defaultHandler(w, r)
+	})
+	result := c.Run(t.Context(), time.Now(), 1, 1)
+	if searches.Load() != 12 || result.SuccessfulSlots != 12 || !errors.Is(result.Failure, errScope) {
+		t.Fatalf("缺失楼栋编号的处理错误：%d 个请求，%d 个成功时段，%v", searches.Load(), result.SuccessfulSlots, result.Failure)
+	}
+	for _, slot := range result.Days[0].Buildings["科技楼"] {
+		if slot.Status != model.Unavailable {
+			t.Fatal("未查询的楼栋时段应保持不可用")
+		}
 	}
 }
 
@@ -219,7 +265,7 @@ func TestSessionExpiryRenewsOnce(t *testing.T) {
 		}
 	})
 	result := c.Run(t.Context(), time.Now(), 1, 1)
-	if result.Failure != nil || result.SuccessfulSlots != 18 || posts.Load() != 2 || searches.Load() != 7 {
+	if result.Failure != nil || result.SuccessfulSlots != 18 || posts.Load() != 2 || searches.Load() != 19 {
 		t.Fatalf("续期结果 %v，登录 %d 次，查询 %d 次", result.Failure, posts.Load(), searches.Load())
 	}
 }
@@ -245,7 +291,7 @@ func TestStopsForSchoolRestrictionsAndTimeout(t *testing.T) {
 		{"access restriction", "", 483, client.ErrDenied, 1},
 		{"rate limit", "", 429, client.ErrDenied, 1},
 		{"challenge", `<div>请拖动下方滑块完成验证</div>`, 200, client.ErrChallenge, 1},
-		{"timeout", "", 0, client.ErrNetwork, 6},
+		{"timeout", "", 0, client.ErrNetwork, 18},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls atomic.Int32

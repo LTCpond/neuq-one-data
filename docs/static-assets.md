@@ -10,6 +10,27 @@
 
 静态站生产发布通过 Wrangler 上传独立构建目录。构建验证政策目录和 PDF 的 SHA-256，并拒绝 APK、AAB、超限文件和符号链接。`/assets/*` 保留 `Cache-Control: public, no-cache, no-transform`，Cloudflare Pages 提供 ETag。[Cloudflare Pages 缓存和 ETag](https://developers.cloudflare.com/pages/configuration/serving-pages/#caching-and-performance)
 
+## Azure Static Web Apps 免费版测试部署
+
+Azure 站点仅用于验证国内网络访问。客户端继续使用 Cloudflare 生产地址，待实测后再评估是否采用 Azure。
+
+1. 在 Azure 门户新建独立的 **Static Web App**。选择订阅和资源组，填写测试站点名称，将 **Plan type** 设为 **Free**，将 **Source** 设为 **Other**，然后创建资源。使用 Azure 分配的 `*.azurestaticapps.net` 域名。[Azure 创建示例](https://learn.microsoft.com/en-us/azure/static-web-apps/gitlab#create-a-static-web-app)
+2. 在该资源的 **Overview → Manage deployment token** 复制部署令牌。在 `LTCpond/neuq-one-data` 的 **Settings → Secrets and variables → Actions → New repository secret** 保存为 `AZURE_STATIC_WEB_APPS_API_TOKEN`。[Azure 部署令牌](https://learn.microsoft.com/en-us/azure/static-web-apps/deployment-token-management) · [GitHub 仓库 Secret](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets#creating-secrets-for-a-repository)
+3. 将 [`azure-assets.yml`](../.github/workflows/azure-assets.yml) 合入默认分支后，进入 **Actions → Deploy static assets to Azure (test) → Run workflow**，选择 `main` 并运行。每次刷新 Azure 站点都需要手动运行。[GitHub 手动运行工作流](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
+4. 成功后从部署步骤日志或 Azure 资源的 **Overview** 获取 HTTPS 地址。在国内网络打开首页和下列路径，检查 HTTP `200`、内容类型与实际内容。
+
+| 路径 | 检查内容 |
+| --- | --- |
+| `/` | 显示「NEUQ One 静态资源测试站」 |
+| `/assets/maps/campus-map.png` | `image/png`，地图可打开 |
+| `/assets/policies/index.json` | `application/json`，列出政策条目及 SHA-256 |
+| `/assets/policies/grade-point.pdf` | `application/pdf`，可打开且 SHA-256 与目录对应条目一致。其他 PDF 使用相同的 `/assets/policies/<id>.pdf` 路径 |
+| `/assets/app/latest.json` | `application/json`，`schemaVersion` 为 `1`，含 `release` 和 `prerelease` |
+
+可用 `curl -I https://<测试域名>/assets/maps/campus-map.png` 查看响应头。`/assets/*` 应返回 `Cache-Control: public, no-cache, no-transform`，站点响应包含 `X-Content-Type-Options: nosniff`。[Azure 路由与响应头配置](https://learn.microsoft.com/en-us/azure/static-web-apps/configuration#global-headers)
+
+工作流使用 Node.js 24 构建静态资源，并从公开 GitHub Release 生成版本清单。上传前核对文件清单，只允许校园地图、政策目录及其列出的 PDF、版本清单和 Azure 站点文件。Azure 部署目录会生成首页和 `staticwebapp.config.json`，并移除 `_headers`。[Azure 跳过内置构建](https://learn.microsoft.com/en-us/azure/static-web-apps/build-configuration#skip-building-front-end-app)
+
 ## Release 触发版本更新
 
 1. 在 GitHub 创建仅限 `LTCpond/neuq-one-data`、具有 **Actions → Read and write** 的细粒度 PAT。在 `LTCpond/neuq-one` 的 Actions Secrets 中保存为 `NEUQ_ASSETS_DISPATCH_TOKEN`。[GitHub 工作流触发 API](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event)

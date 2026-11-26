@@ -113,6 +113,8 @@ bash scripts/stage-assets.sh
 
 静态站首次部署需创建独立 Direct Upload 项目，沿用本仓库的 Cloudflare Secrets。新版客户端上线前，先运行 **Deploy static assets** 并验证生产 URL。旧版客户端的地图和政策继续随空教室快照发布，确认兼容期结束后再移除旧工作流的静态复制步骤。[静态站和正式 Release 配置](docs/static-assets.md)
 
+静态资源也可手动部署到独立的 Azure Static Web Apps 免费版站点，用于国内网络访问测试。[Azure 测试部署](docs/static-assets.md#azure-static-web-apps-免费版测试部署)
+
 ### 建立第一个生产快照
 
 1. 在 Cloudflare 控制台的 **Workers & Pages** 创建 Direct Upload 项目。记录项目名和账户 ID。也可运行 `npx wrangler@4.168.0 pages project create neuq-one-data --production-branch main`。生产分支应与 GitHub 默认分支一致。默认 Pages 子域名即可使用。[Direct Upload 创建指南](https://developers.cloudflare.com/pages/get-started/direct-upload/)

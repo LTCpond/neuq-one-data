@@ -81,7 +81,7 @@ func TestResultEchoSelection(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = parseGrid(doc, query(date, 1, tc.page, "1"), tc.page)
+			_, err = parseGrid(doc, query(date, 1, tc.page, preferredPageSize, "1"), tc.page)
 			if tc.field == "" {
 				if err != nil {
 					t.Fatal(err)

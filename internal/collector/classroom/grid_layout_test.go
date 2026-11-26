@@ -28,7 +28,7 @@ func TestGridLayoutPreservesRawRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := parseGrid(doc, query(date, 1, 1, "1"), 1)
+	g, err := parseGrid(doc, query(date, 1, 1, preferredPageSize, "1"), 1)
 	if err != nil {
 		t.Fatal(err)
 	}

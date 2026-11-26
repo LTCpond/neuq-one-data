@@ -11,12 +11,15 @@ import (
 	"github.com/PuerkitoBio/goquery"
 )
 
-func query(date string, start, page int, buildingID string) url.Values {
+const preferredPageSize = 200
+
+func query(date string, start, page, size int, buildingID string) url.Values {
 	form := url.Values{
 		"classroom.type.id": {""}, "classroom.campus.id": {""}, "classroom.building.id": {buildingID},
 		"seats": {""}, "classroom.name": {""}, "cycleTime.cycleCount": {"1"}, "cycleTime.cycleType": {"1"},
 		"cycleTime.dateBegin": {date}, "cycleTime.dateEnd": {date}, "roomApplyTimeType": {"0"},
 		"timeBegin": {strconv.Itoa(start)}, "timeEnd": {strconv.Itoa(start + 1)},
+		"pageSize": {strconv.Itoa(size)},
 	}
 	if page > 1 {
 		form.Set("pageNo", strconv.Itoa(page))
@@ -66,6 +69,7 @@ var noteSuffix = regexp.MustCompile(`[（(]?具体安排以开课部门通知为
 
 type room struct {
 	name, building, equipment, capacity string
+	rawName, rawBuilding                string
 	nameCell, buildingCell              string
 	cellCount                           int
 }

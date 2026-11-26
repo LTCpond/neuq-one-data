@@ -17,6 +17,10 @@ type gridCell struct {
 }
 
 func (c gridCell) value() string {
+	return compact(c.rawValue())
+}
+
+func (c gridCell) rawValue() string {
 	if c.width != 1 {
 		return ""
 	}
@@ -83,7 +87,7 @@ func (layout *gridLayout) expand(cells *goquery.Selection, remainingRows int) (g
 			failure = integrity(codeTableStructure, "rowspan 无效")
 			return false
 		}
-		cell := gridCell{text: compact(element.Text()), width: width}
+		cell := gridCell{text: strings.TrimSpace(element.Text()), width: width}
 		for i := index; i < index+width; i++ {
 			if columns[i].width != 0 {
 				failure = integrity(codeTableStructure, "单元格与已有合并单元格重叠", slog.Int("overlapping_column", i+1))

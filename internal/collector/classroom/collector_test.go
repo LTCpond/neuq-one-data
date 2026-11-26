@@ -94,7 +94,7 @@ func TestQueryResult(t *testing.T) {
 			r.FormValue("cycleTime.dateBegin") != date || r.FormValue("cycleTime.dateEnd") != date ||
 			r.FormValue("timeBegin") != "3" || r.FormValue("timeEnd") != "4" ||
 			r.FormValue("roomApplyTimeType") != "0" || r.FormValue("classroom.building.id") != "7" ||
-			r.Form.Has("pageSize") || r.Form.Has("pageNo") {
+			r.FormValue("pageSize") != "200" || r.Form.Has("pageNo") {
 			t.Error("错误的教务查询参数")
 		}
 		fmt.Fprint(w, html)

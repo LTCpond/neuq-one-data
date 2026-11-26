@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 
 	"github.com/LTCpond/neuq-one-data/internal/model"
 )
@@ -16,6 +17,7 @@ func (c *Collector) fetch(ctx context.Context, date string, start int, building 
 	var g grid
 	progress := pagination{total: -1}
 	page := 1
+	requestSize := preferredPageSize
 	defer func() {
 		if failure == nil {
 			return
@@ -27,10 +29,13 @@ func (c *Collector) fetch(ctx context.Context, date string, start int, building 
 		failure = &pageFailure{error: failure, page: page}
 	}()
 
-	rooms := roomResults{details: map[string]model.RoomDetail{}, rawPages: map[[2]string]int{}, roomPages: map[string]int{}}
+	rooms := roomResults{
+		details: map[string]model.RoomDetail{}, rawPages: map[[2]string]roomOccurrence{},
+		roomPages: map[string]int{}, pages: map[int]pageRecords{}, seenRecords: pageRecords{},
+	}
 	for {
 		var err error
-		g, err = c.page(ctx, date, start, page, building)
+		g, err = c.page(ctx, date, start, page, requestSize, building)
 		if err != nil {
 			return nil, err
 		}
@@ -42,6 +47,10 @@ func (c *Collector) fetch(ctx context.Context, date string, start int, building 
 				slog.Int("max_pages", c.MaxPages), slog.Int("calculated_pages", (g.total+g.size-1)/g.size))
 		}
 		if page == 1 {
+			c.logPageSize(ctx, building, g)
+			if g.size > 0 {
+				requestSize = g.size
+			}
 			progress.total = g.total
 			// 没有数据行时，无法用实际行数推算分页大小。
 			if len(g.rows) == 0 && g.total > 0 && g.size == 0 {
@@ -67,6 +76,11 @@ func (c *Collector) fetch(ctx context.Context, date string, start int, building 
 			return nil, duplicate
 		}
 		if page == progress.pages {
+			if rooms.specialDuplicates+rooms.samePageRaw+rooms.samePageNormalized+rooms.samePageSpecial > 0 {
+				c.Log.InfoContext(ctx, "已处理重复的教室记录", "date", date, "building", building, "time_begin", start, "pages", page,
+					"special_duplicates", rooms.specialDuplicates, "same_page_raw_duplicates", rooms.samePageRaw,
+					"same_page_normalized_duplicates", rooms.samePageNormalized, "same_page_special_duplicates", rooms.samePageSpecial)
+			}
 			return rooms.details, nil
 		}
 		progress.rows += len(g.rows)
@@ -130,14 +144,31 @@ func (p pagination) diagnostics(g grid, page int) []slog.Attr {
 	return attrs
 }
 
+type roomOccurrence struct {
+	page                   int
+	special, pageConfirmed bool
+}
+
+// 比较整页的记录及出现次数，忽略页面内的显示顺序和序号。
+type pageRecords map[[4]string]int
+
 type roomResults struct {
-	details   map[string]model.RoomDetail
-	rawPages  map[[2]string]int
-	roomPages map[string]int
+	details                                          map[string]model.RoomDetail
+	rawPages                                         map[[2]string]roomOccurrence
+	roomPages                                        map[string]int
+	pages                                            map[int]pageRecords
+	seenRecords                                      pageRecords
+	specialDuplicates                                int
+	samePageRaw, samePageNormalized, samePageSpecial int
 }
 
 func (c *Collector) addPage(rooms *roomResults, g grid, page int, building string) (*integrityError, error) {
-	var duplicate *integrityError
+	records := make(pageRecords, len(g.rows))
+	for _, r := range g.rows {
+		records[[4]string{r.name, c.canonicalBuilding(r.building), r.equipment, r.capacity}]++
+	}
+	var duplicate, conflict *integrityError
+	var rawDuplicates, normalizedDuplicates, specialDuplicates int
 	for i, r := range g.rows {
 		if noticeRoom(r.name) {
 			continue
@@ -146,15 +177,32 @@ func (c *Collector) addPage(rooms *roomResults, g grid, page int, building strin
 		if err != nil {
 			return nil, err
 		}
-		keyBuilding := actual
-		if keyBuilding == "" {
-			keyBuilding = c.canonicalBuilding(r.building)
+		special := excludedRoom(r)
+		key := [2]string{r.rawName, r.rawBuilding}
+		if special || actual == "" {
+			key = [2]string{r.name, c.canonicalBuilding(r.building)}
 		}
-		key := [2]string{r.name, keyBuilding}
-		if previous := rooms.rawPages[key]; previous != 0 && previous != page && duplicate == nil {
-			duplicate = integrity(codeDuplicate, "不同页出现相同记录", slog.Int("row", i+1), slog.Int("previous_page", previous))
+		previous := rooms.rawPages[key]
+		rawDuplicate := previous.page != 0 && previous.page != page
+		switch {
+		case rawDuplicate && special && previous.special:
+			specialDuplicates++
+			if duplicate == nil && (!g.pageConfirmed || !previous.pageConfirmed) {
+				duplicate = duplicateRoom("special_room", "特殊教室记录重复且页码未经确认", previous.page, i+1, r)
+			}
+		case rawDuplicate:
+			rawDuplicates++
+			if duplicate == nil {
+				duplicate = duplicateRoom("raw_room", "不同页出现相同教室记录", previous.page, i+1, r)
+			}
+		case previous.page == page && special && previous.special:
+			rooms.samePageSpecial++
+		case previous.page == page:
+			rooms.samePageRaw++
 		}
-		rooms.rawPages[key] = page
+		if previous.page == 0 {
+			rooms.rawPages[key] = roomOccurrence{page, special, g.pageConfirmed}
+		}
 		if actual == "" {
 			continue
 		}
@@ -163,19 +211,56 @@ func (c *Collector) addPage(rooms *roomResults, g grid, page int, building strin
 			continue
 		}
 		if previous := rooms.roomPages[name]; previous != 0 && previous != page {
+			if !rawDuplicate {
+				normalizedDuplicates++
+			}
 			if duplicate == nil {
-				duplicate = integrity(codeDuplicate, "不同页出现归一化后相同的教室", slog.Int("row", i+1), slog.Int("previous_page", previous))
+				duplicate = duplicateRoom("normalized_room", "不同页出现归一化后相同的教室", previous, i+1, r)
 			}
 			continue
 		}
 		if old, exists := rooms.details[name]; exists {
-			merged, conflict := mergeRoom(old, detail)
-			if conflict != nil {
-				return nil, conflict.with(slog.Int("row", i+1))
+			if previous.page != page {
+				rooms.samePageNormalized++
+			}
+			merged, err := mergeRoom(old, detail)
+			if err != nil && conflict == nil {
+				conflict = err.with(slog.Int("row", i+1))
 			}
 			detail = merged
 		}
 		rooms.roomPages[name], rooms.details[name] = page, detail
 	}
+	hasNewRecord := false
+	for record, count := range records {
+		if rooms.seenRecords[record] < count {
+			hasNewRecord = true
+		}
+		rooms.seenRecords[record] += count
+	}
+	if page > 1 && len(records) > 0 && !hasNewRecord {
+		duplicate = integrity(codeDuplicate, "该页全部记录均已在前页出现", slog.String("duplicate_kind", "repeated_page"))
+	}
+	for previous := 1; previous < page; previous++ {
+		if len(records) > 0 && maps.Equal(rooms.pages[previous], records) {
+			duplicate = integrity(codeDuplicate, "不同页返回整页相同记录", slog.String("duplicate_kind", "repeated_page"),
+				slog.Int("previous_page", previous))
+			break
+		}
+	}
+	if conflict != nil {
+		return nil, conflict
+	}
+	if duplicate != nil {
+		duplicate.with(slog.Int("raw_duplicates", rawDuplicates), slog.Int("normalized_duplicates", normalizedDuplicates),
+			slog.Int("special_duplicates", specialDuplicates))
+	}
+	rooms.pages[page] = records
+	rooms.specialDuplicates += specialDuplicates
 	return duplicate, nil
+}
+
+func duplicateRoom(kind, reason string, previous, row int, r room) *integrityError {
+	return integrity(codeDuplicate, reason, slog.String("duplicate_kind", kind),
+		slog.Int("row", row), slog.Int("previous_page", previous)).with(diagnoseRoom(r).attrs()...)
 }

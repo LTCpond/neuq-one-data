@@ -3,11 +3,17 @@
 | 来源 | 观察到的行为 |
 | --- | --- |
 | Flutter 的 `neuq_login_protocol.dart`、`neuq_web_client.dart` | 官方教务入口为 `/eams/homeExt.action`；统一身份认证经 `ids.neuq.edu.cn/authserver/login`；空教室使用表单页面和 AJAX 结果页面，复用 Cookie 会话。客户端会将已见的直连 HTTP 文档跳转升级为 HTTPS |
-| Flutter 的查询实现和测试 | `free!search.action` 使用 POST。查询体包含日期、起止节次、楼栋编号、分页字段。按楼栋查询使用表单中已确认的非空楼栋编号，分页大小取自服务端。结果可为 `gridtable` 或 HTML 片段，分页可能通过 `pageInfo` 或文字总量表示 |
+| Flutter 的查询实现和测试 | `free!search.action` 使用 POST。查询体包含日期、起止节次、楼栋编号、分页字段。按楼栋查询使用表单中已确认的非空楼栋编号。结果可为 `gridtable` 或 HTML 片段，分页可能通过 `pageInfo` 或文字总量表示 |
 | Flutter 的领域模型和页面 | 按两节分组，区分缺失时段与空集合。全天空闲需要全部时段的交集，下一时段缺失时无法推出是否有课 |
 | 参考 Rust 项目 | WebVPN 门户 CAS 后进入教务 CAS SSO，表单提供 `lt`、`execution`、AES 盐及提交字段。空教室查询使用相同的日期、节次和周期字段。Rust 用表头读取网格并过滤异常场地，查询回显和分页校验的依据来自 Flutter |
 
 参考资料：[NEUQ One](https://github.com/LTCpond/neuq-one)、[neuq-classroom-query](https://github.com/wy723161060/neuq-classroom-query)、[学校 WebVPN 使用说明](https://xxhb.neuq.edu.cn/info/1018/1434.htm)。
+
+## 实际分页验证
+
+2026-11-26 的真实采集中，工学馆、科技楼和人文楼都接受 `pageSize=200`。科技楼 `1-2` 时段默认每页 20 条，6 页合计 110 条。第 5 页第 16 行与第 1 页重复的是已排除的特殊教室。每页 200 条时一次返回同样的 110 条，逐条对照的记录内容和出现次数一致。[采集日志](https://github.com/LTCpond/neuq-one-data/actions/runs/45777957971)
+
+采集器首页请求 200 条，后续用 `pageNo` 和响应 `pageInfo` 确认的页大小继续。各页仍校验查询范围、页数、行数和总量。相邻或不相邻页出现普通教室重叠、整页重放，或特殊教室重复且无法确认页码时，该时段进入原有失败处理。可确认的特殊教室重复仍计入原始总量。
 
 ## 本次验证范围
 

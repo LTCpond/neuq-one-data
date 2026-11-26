@@ -22,6 +22,7 @@ type Collector struct {
 	Log                   *slog.Logger
 	ids                   map[string]string
 	campusBuildings       []string
+	pageSizes             map[string]int
 	renewed               bool
 }
 
@@ -40,13 +41,13 @@ func stop(err error) bool {
 		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
-func (c *Collector) page(ctx context.Context, date string, start, number int, building string) (grid, error) {
+func (c *Collector) page(ctx context.Context, date string, start, number, size int, building string) (grid, error) {
 	for {
 		id := c.ids[building]
 		if !numberID.MatchString(id) {
 			return grid{}, &scopeMismatch{source: "building.option", field: "classroom.building.id", expected: "<已确认编号>", actual: "<空>", page: number}
 		}
-		form := query(date, start, number, id)
+		form := query(date, start, number, size, id)
 		response, err := c.Session.HTTP.Do(ctx, c.Session.Routes.Academic(auth.SearchPath), form, true, true)
 		if err == nil {
 			doc, parseErr := c.Session.SearchDocument(response)
@@ -69,6 +70,18 @@ func (c *Collector) page(ctx context.Context, date string, start, number int, bu
 				actual:   echoDiagnostic("classroom.building.id", []string{c.ids[building]}), page: number}
 		}
 	}
+}
+
+func (c *Collector) logPageSize(ctx context.Context, building string, g grid) {
+	if previous, exists := c.pageSizes[building]; exists && previous == g.size {
+		return
+	}
+	if c.pageSizes == nil {
+		c.pageSizes = make(map[string]int)
+	}
+	c.pageSizes[building] = g.size
+	c.Log.InfoContext(ctx, "教务分页大小", "building", building, "requested_page_size", preferredPageSize,
+		"reported_page_size", g.size, "reported_total_records", g.total, "actual_records", len(g.rows))
 }
 
 func (c *Collector) resolveBuilding(r room, requested string, buildingConfirmed bool, page, row int) (string, error) {

@@ -22,6 +22,7 @@ type grid struct {
 	rows               []room
 	total, size, pages int
 	buildingConfirmed  bool
+	pageConfirmed      bool
 }
 
 func parseGrid(doc *goquery.Document, requested url.Values, page int) (grid, error) {
@@ -74,6 +75,7 @@ func parseGrid(doc *goquery.Document, requested url.Values, page int) (grid, err
 		}
 		name, building := columns.cell(positions.name), columns.cell(positions.building)
 		r := room{name: name.value(), building: building.value(), equipment: columns.cell(positions.equipment).value(),
+			rawName: name.rawValue(), rawBuilding: building.rawValue(),
 			capacity: columns.cell(positions.capacity).value(), nameCell: name.kind(), buildingCell: building.kind(),
 			cellCount: cells.Length()}
 		if !hasHeaders {
@@ -112,7 +114,6 @@ func parseGrid(doc *goquery.Document, requested url.Values, page int) (grid, err
 		id = strings.TrimSuffix(tbody.AttrOr("id", ""), "_data")
 	}
 	var paging *regexp.Regexp
-	pageConfirmed := false
 	if id != "" {
 		paging = regexp.MustCompile(`\bpage_` + regexp.QuoteMeta(id) + `\.pageInfo\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)`)
 		if matches := paging.FindAllStringSubmatch(strings.Join(scripts, "\n"), -1); len(matches) > 0 {
@@ -143,10 +144,10 @@ func parseGrid(doc *goquery.Document, requested url.Values, page int) (grid, err
 					slog.Int("text_total_records", g.total), slog.Int("page_info_total_records", total), slog.Int("reported_page_size", size))
 			}
 			g.total, g.size = total, size
-			pageConfirmed = true
+			g.pageConfirmed = true
 		}
 	}
-	confirmed, err := checkEcho(scripts, paging, requested, page, pageConfirmed)
+	confirmed, err := checkEcho(scripts, paging, requested, page, g.pageConfirmed)
 	if err != nil {
 		return g, err
 	}

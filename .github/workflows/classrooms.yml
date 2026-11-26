@@ -9,7 +9,7 @@ on:
         options: [today, week]
         default: week
       publish:
-        description: 将校验通过的快照发布到 Cloudflare Pages
+        description: 将校验通过的快照发布到 Azure 和 Cloudflare
         type: boolean
         default: false
       bootstrap:
@@ -26,15 +26,20 @@ concurrency:
 
 jobs:
   collect:
+    name: Collect and verify classroom snapshot
     if: github.ref_name == github.event.repository.default_branch && (github.event_name == 'workflow_dispatch' || vars.NEUQ_COLLECTION_ENABLED == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 18
+    outputs:
+      revision: ${{ steps.checkout.outputs.commit }}
     env:
       CLOUDFLARE_PROJECT: ${{ vars.CLOUDFLARE_PROJECT || 'neuq-one-data' }}
       NEUQ_PUBLIC_ORIGIN: ${{ vars.NEUQ_PUBLIC_ORIGIN }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        id: checkout
         with:
+          ref: ${{ github.ref_name }}
           persist-credentials: false
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
@@ -63,38 +68,110 @@ jobs:
           NEUQ_TODAY_TTL: ${{ vars.NEUQ_TODAY_TTL }}
           NEUQ_FUTURE_TTL: ${{ vars.NEUQ_FUTURE_TTL }}
         run: |
-          if [[ ! "$CLOUDFLARE_PROJECT" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
-            echo 'Cloudflare Pages 项目名称无效'
-            exit 1
+          previous="$NEUQ_PUBLIC_ORIGIN"
+          if [[ "$BOOTSTRAP" == true ]]; then
+            previous=''
+          elif [[ -z "$previous" ]]; then
+            if [[ ! "$CLOUDFLARE_PROJECT" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+              echo '用于读取历史快照的 Cloudflare Pages 项目名称无效'
+              exit 1
+            fi
+            previous="https://${CLOUDFLARE_PROJECT}.pages.dev"
           fi
-          previous="${NEUQ_PUBLIC_ORIGIN:-https://${CLOUDFLARE_PROJECT}.pages.dev}"
-          if [[ "$BOOTSTRAP" == true ]]; then previous=''; fi
           .work/collector -mode "$MODE" -previous "$previous" -output public
           .work/collector -verify -output public
-      - name: Stage static assets
-        run: bash scripts/stage-assets.sh
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      - name: Upload verified classroom snapshot
         if: github.event_name == 'schedule' || inputs.publish
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: classroom-snapshot-${{ github.run_attempt }}
+          path: public/
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy-cloudflare:
+    name: Deploy classroom snapshot to Cloudflare Pages
+    needs: collect
+    if: github.event_name == 'schedule' || inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_PROJECT: ${{ vars.CLOUDFLARE_PROJECT || 'neuq-one-data' }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.collect.outputs.revision }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: classroom-snapshot-${{ github.run_attempt }}
+          path: public
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
           package-manager-cache: false
+      - name: Stage static assets for older clients
+        run: |
+          bash scripts/stage-assets.sh
+          if [[ ! -f public/assets/maps/campus-map.png || ! -f public/assets/policies/index.json ]]; then
+            echo '缺少旧版客户端使用的校园地图或政策目录，保留上一版 Cloudflare 部署'
+            exit 1
+          fi
       - name: Install Wrangler
-        if: github.event_name == 'schedule' || inputs.publish
         run: npm install --prefix .work/wrangler --no-save --no-package-lock wrangler@4.168.0
-      - name: Deploy production snapshot
-        if: github.event_name == 'schedule' || inputs.publish
+      - &check_snapshot_date
+        name: Check snapshot date before deployment
+        run: |
+          if [[ "$(jq -er '.date' public/api/v1/classrooms/today.json)" != "$(TZ=Asia/Shanghai date +%F)" ]]; then
+            echo '快照日期已过期，保留上一版生产快照'
+            exit 1
+          fi
+      - name: Upload snapshot to Cloudflare Pages
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WRANGLER_SEND_METRICS: 'false'
         run: |
+          if [[ ! "$CLOUDFLARE_PROJECT" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+            echo 'Cloudflare Pages 项目名称无效'
+            exit 1
+          fi
           if [[ -z "$CLOUDFLARE_API_TOKEN" || -z "$CLOUDFLARE_ACCOUNT_ID" ]]; then
             echo '请配置 Cloudflare 部署 Secrets'
             exit 1
           fi
-          if [[ "$(jq -r '.date' public/api/v1/classrooms/today.json)" != "$(TZ=Asia/Shanghai date +%F)" ]]; then
-            echo '快照日期已过期，保留上一版生产快照'
-            exit 1
-          fi
           .work/wrangler/node_modules/.bin/wrangler pages deploy public \
             --project-name "$CLOUDFLARE_PROJECT" --branch "$GITHUB_REF_NAME"
+
+  deploy-azure:
+    name: Deploy classroom snapshot to Azure Static Web Apps
+    needs: collect
+    if: github.event_name == 'schedule' || inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.collect.outputs.revision }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: classroom-snapshot-${{ github.run_attempt }}
+          path: public
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Prepare public classroom snapshot for Azure
+        run: node scripts/prepare-azure-data.mjs public .work/classrooms-azure
+      - *check_snapshot_date
+      - name: Upload snapshot to Azure
+        uses: Azure/static-web-apps-deploy@4d27395796ac319302594769cfe812bd207490b1 # v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_DATA_SCHEDULE_API_TOKEN }}
+          app_location: ".work/classrooms-azure"
+          output_location: ""
+          api_location: ""
+          skip_app_build: true
+          production_branch: ${{ github.event.repository.default_branch }}
+          action: upload

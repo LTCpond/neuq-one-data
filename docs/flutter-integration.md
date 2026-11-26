@@ -16,4 +16,8 @@ Flutter 通过 Riverpod 提供 `PublicDataClient`，公共请求不使用学校�
 - `/assets/policies/index.json` 提供政策目录，`/assets/policies/<id>.pdf` 提供对应原件。缓存目录可离线使用，PDF 按目录中的 SHA-256 校验后存储。
 - `/assets/app/latest.json` 提供两个发布渠道的版本、GitHub Release 页面和纯文本摘要。客户端按安装包的构建渠道选择候选版本。手动和启动检查读取同一清单，APK 从 GitHub Releases 下载。[清单格式](api.md#静态资源)
 
-迁移期间，旧版客户端可在 `neuq-one-data` 的原路径访问地图和政策。先部署并验证静态站，再发布新版客户端。[静态资源接口](api.md#静态资源) · [部署顺序](static-assets.md)
+旧版客户端可在 `neuq-one-data` 的原路径访问地图和政策。[静态资源接口](api.md#静态资源)
+
+## 后续 Azure 主源接入
+
+通过国内网络验证后，未来客户端可优先请求 Azure，并在响应失败、结构无效或找不到有效快照时回退到 Cloudflare。空教室切换时需要同时切换域名和路径前缀，Azure 使用 `/data/v1/`，Cloudflare 使用 `/api/v1/`。静态资源切换域名即可。HTTP 验证值及缓存版本须按源地址和路径保存，备用站的较旧快照不应替换设备上更新且有效的数据。[路径对照](api.md) · [部署与响应验证](static-assets.md)

@@ -1,12 +1,12 @@
 # 公共数据服务架构
 
-两个生产站点从同一个 `neuq-one-data` 仓库部署。Flutter 各功能使用对应的 HTTPS 根地址。
+空教室和静态资源从同一个 `neuq-one-data` 仓库部署，每类资源在 Azure 和 Cloudflare 各用一个应用。未来 Flutter 客户端可优先使用 Azure，并在请求失败或数据不可用时回退到 Cloudflare。
 
 | 数据 | 生成与发布 | 失败时的行为 |
 | --- | --- | --- |
-| 空教室快照和采集状态 | Worker `neuq-one-scheduler` 按既有计划触发 `classrooms.yml`。Go Collector 读取历史数据、采集并验证 `public/`，随后发布至 `neuq-one-data` | 采集或校验失败时保留上一份生产快照，客户端以目标日期和时段有效期判断是否可用 |
-| 地图、政策原件与目录、App 版本清单 | `assets.yml` 从 `main` 构建 `.work/assets-public/`，生成 Release 清单并发布至 `neuq-one-assets` | 构建或校验失败时保留上一份静态站部署。地图和政策功能继续使用有效的设备缓存 |
+| 空教室快照和采集状态 | Worker `neuq-one-scheduler` 触发 `classrooms.yml`。Go Collector 从现有 Cloudflare 历史源读取数据，采集并验证一次。同一份 JSON 分别发布至 Azure 的 `/data/v1/` 和 Cloudflare 的 `/api/v1/` | 采集或校验失败时，两站均继续提供各自上一份生产快照。客户端以目标日期和时段有效期判断可用性 |
+| 地图、政策原件与目录、App 版本清单 | `assets.yml` 从 `main` 构建一次静态资源和 Release 清单，两个任务分别发布至 Azure 静态资源应用和 `neuq-one-assets` | 构建或校验失败时，两站均继续提供各自上一份部署。地图和政策功能可使用有效的设备缓存 |
 
-两个工作流分别使用各自的生产并发组和输出目录。静态资源提交与 App 的 Release 更新只触发静态发布，无需教务账号或采集结果。每次静态部署重新读取 GitHub Release 列表，生成正式及公测两个渠道各自的版本和摘要。
+两个工作流各自使用生产并发组，组内同一时间只有一个运行。验证通过的公共产物按本次运行尝试传给两个独立发布任务，各自在自己的目录部署。一个任务失败时，对应站点保留上一成功版本，另一个任务可以完成。重新手动触发会生成新产物，避免发布任务单独重跑时上传旧快照或清单。
 
-迁移期中，`classrooms.yml` 继续在快照校验后复制 `assets/` 到旧站。新版客户端应在静态站完成首次部署后发布。待维护者确认已安装旧版客户端的兼容要求，再移除旧站的复制步骤。工作流配置和接口详见 [静态资源部署](static-assets.md) · [公共数据服务接口](api.md)。
+静态资源提交和 App Release 更新均通过 `assets.yml` 刷新两个平台，每次读取公开 Release 列表并生成正式版与公测版的版本及摘要。旧版客户端通过 Cloudflare 空教室站的原路径访问地图和政策，兼容文件只随该站发布。新版客户端接入前应在国内网络验证两个 Azure 应用。[部署说明](static-assets.md) · [公共数据服务接口](api.md)。

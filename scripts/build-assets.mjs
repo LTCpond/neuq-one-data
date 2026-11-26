@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { cp, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { copyFile, lstat, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 
@@ -8,6 +8,8 @@ const appRepository = 'LTCpond/neuq-one';
 const versionTag = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 const maxFileBytes = 25 * 1024 * 1024;
 const maxPolicyIndexBytes = 128 * 1024;
+const mapFile = 'maps/campus-map.png';
+const policyIndex = 'policies/index.json';
 const maxReleaseAttempts = 3;
 const maxReleaseRetryDelay = 120_000;
 const releasePageSize = 100;
@@ -177,6 +179,8 @@ function manifestRelease(release, prerelease) {
 }
 
 async function validateAssets(source) {
+  if (!(await lstat(source)).isDirectory()) throw new Error('静态资源来源必须为目录');
+  const files = new Set();
   const entries = await readdir(source, { recursive: true, withFileTypes: true });
   for (const entry of entries) {
     if (entry.isDirectory()) continue;
@@ -187,29 +191,59 @@ async function validateAssets(source) {
     if ((await stat(path)).size > maxFileBytes) {
       throw new Error(`静态资源超过 Pages 单文件限制: ${path}`);
     }
+    if (entry.name !== '.gitkeep') files.add(relative(source, path).split(sep).join('/'));
   }
 
-  const catalogPath = join(source, 'policies', 'index.json');
-  if (!entries.some((entry) => join(entry.parentPath, entry.name) === catalogPath)) return;
+  const allowed = new Set([mapFile, policyIndex]);
+  if (files.has(policyIndex)) {
+    for (const file of await validatePolicies(source, files)) allowed.add(file);
+  }
+  for (const file of files) {
+    if (!allowed.has(file)) throw new Error(`静态发布包含非预期文件: ${file}`);
+  }
+  return files;
+}
+
+async function validatePolicies(source, files) {
+  const catalogPath = join(source, policyIndex);
   if ((await stat(catalogPath)).size > maxPolicyIndexBytes) throw new Error('学校政策目录过大');
   const catalog = JSON.parse(await readFile(catalogPath, 'utf8'));
   if (catalog?.version !== 1 || !Array.isArray(catalog.policies)) {
     throw new Error('学校政策目录格式错误');
   }
-  const ids = new Set();
+  const policies = new Set();
   for (const policy of catalog.policies) {
     const { id, title, category, sha256 } = policy ?? {};
     if (typeof id !== 'string' || id.length > 64 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id) ||
         typeof title !== 'string' || !title.trim() || typeof category !== 'string' || !category.trim() ||
-        typeof sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(sha256) || ids.has(id)) {
+        typeof sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(sha256)) {
       throw new Error('学校政策条目格式错误');
     }
-    ids.add(id);
-    const pdf = await readFile(join(source, 'policies', `${id}.pdf`));
+    const file = `policies/${id}.pdf`;
+    if (policies.has(file)) throw new Error('学校政策目录包含重复条目');
+    if (!files.has(file)) throw new Error(`学校政策缺少 PDF: ${id}`);
+    policies.add(file);
+    const pdf = await readFile(join(source, file));
     if (pdf.subarray(0, 5).toString('ascii') !== '%PDF-' || createHash('sha256').update(pdf).digest('hex') !== sha256) {
       throw new Error(`学校政策 PDF 校验失败: ${id}`);
     }
   }
+  return policies;
+}
+
+async function copyPublicAssets(source, destination, files) {
+  await mkdir(destination);
+  for (const file of files) {
+    const target = join(destination, file);
+    await mkdir(dirname(target), { recursive: true });
+    await copyFile(join(source, file), target);
+  }
+}
+
+export async function stageLegacyAssets(output, source = 'assets') {
+  source = resolve(source);
+  const files = await validateAssets(source);
+  await copyPublicAssets(source, join(output, 'assets'), files);
 }
 
 export async function buildAssets(output, {
@@ -226,7 +260,8 @@ export async function buildAssets(output, {
   };
   const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
   if (Buffer.byteLength(manifestText) > 16 * 1024) throw new Error('App 版本清单过大');
-  await validateAssets(source);
+  const files = await validateAssets(source);
+  if (!files.has(mapFile) || !files.has(policyIndex)) throw new Error('静态发布缺少校园地图或政策目录');
   const headers = (await readFile(headersFile, 'utf8')).replaceAll('\r\n', '\n');
   const assetsHeaders = headers.match(/^\/assets\/\*\n(?:[ \t]+[^\n]+\n?)+/m)?.[0];
   if (!assetsHeaders) throw new Error('缺少 Pages 静态资源响应头');
@@ -234,7 +269,7 @@ export async function buildAssets(output, {
   await mkdir(dirname(output), { recursive: true });
   await mkdir(output);
   const assets = join(output, 'assets');
-  await cp(source, assets, { recursive: true, filter: (path) => basename(path) !== '.gitkeep' });
+  await copyPublicAssets(source, assets, files);
   await writeFile(join(output, '_headers'), assetsHeaders);
   await mkdir(join(assets, 'app'), { recursive: true });
   await writeFile(join(assets, 'app', 'latest.json'), manifestText, { flag: 'wx' });
@@ -242,6 +277,10 @@ export async function buildAssets(output, {
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   const [output = '.work/assets-public', mode] = process.argv.slice(2);
-  if (mode && mode !== '--github-release') throw new Error(`未知构建选项: ${mode}`);
-  await buildAssets(output, mode === '--github-release' ? await fetchPublishedReleases() : {});
+  if (mode === '--legacy') {
+    await stageLegacyAssets(output);
+  } else {
+    if (mode && mode !== '--github-release') throw new Error(`未知构建选项: ${mode}`);
+    await buildAssets(output, mode === '--github-release' ? await fetchPublishedReleases() : {});
+  }
 }

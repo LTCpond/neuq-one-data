@@ -2,15 +2,17 @@
 
 ## 空教室 API v1
 
-生产根地址为 `https://neuq-one-data.pages.dev`。
+Azure 根地址取空教室应用的 `*.azurestaticapps.net` 地址。Cloudflare 根地址为 `https://neuq-one-data.pages.dev`，已发布客户端继续使用此地址。
 
 三个接口返回 UTF-8 JSON，允许跨域请求。日期按 `Asia/Shanghai` 解释，时间为带 `+08:00` 偏移的 RFC 3339。三份文件来自同一批次，可用 `generatedAt` 核对版本。静态响应缓存 60 秒。
 
-| GET 路径 | 内容 |
-| --- | --- |
-| `/api/v1/classrooms/today.json` | 当天全部已配置楼栋、六个时段和采集时间，一次 GET |
-| `/api/v1/classrooms/week.json` | `days` 自然日数组，按日期升序，首项等同当天接口的日期对象 |
-| `/api/v1/status.json` | 快照的北京时间日期、当天完整性、整周状态及三种时段数量 |
+| Azure GET 路径 | Cloudflare GET 路径 | 内容 |
+| --- | --- | --- |
+| `/data/v1/classrooms/today.json` | `/api/v1/classrooms/today.json` | 当天全部已配置楼栋、六个时段和采集时间，一次 GET |
+| `/data/v1/classrooms/week.json` | `/api/v1/classrooms/week.json` | `days` 自然日数组，按日期升序，首项等同当天接口的日期对象 |
+| `/data/v1/status.json` | `/api/v1/status.json` | 快照的北京时间日期、当天完整性、整周状态及三种时段数量 |
+
+Azure 的 `/api` 供后端路由使用，因此空教室静态文件发布到 `/data/v1/`。Azure 官方模拟器也会把 `/api/v1/` 下的路径交给后端，即使目录里存在同名静态文件。未来客户端切换平台时，应同时切换空教室根地址和路径前缀。两站的数据结构一致，发布任务失败时可能仍提供不同批次。HTTP 验证值按站点及路径分别保存。[Azure API 路由](https://learn.microsoft.com/en-us/azure/static-web-apps/apis-overview#api-constraints)
 
 三个接口的共同字段是 `schemaVersion`（当前为 `1`）、`timezone`、`source` 和 `generatedAt`。`generatedAt` 记录快照生成时间。`updatedAt` 是目标日所含数据的最新实际采集时间。响应的每个时段都有独立的 `collectedAt` 和 `expiresAt`。全部不可用的日期的 `updatedAt` 为 `null`。
 
@@ -44,7 +46,7 @@ JSON Schema 可直接校验任一接口，也可分别引用 `#/$defs/Today`、`
 
 ## 静态资源
 
-生产根地址为 `https://neuq-one-assets.pages.dev`。
+Azure 根地址取静态资源应用的 `*.azurestaticapps.net` 地址。复用原测试应用时，根地址为 `https://agreeable-wave-005580b00.4.azurestaticapps.net`。Cloudflare 根地址为 `https://neuq-one-assets.pages.dev`。两个平台共用以下路径。
 
 | GET 路径 | 内容 |
 | --- | --- |
@@ -53,7 +55,7 @@ JSON Schema 可直接校验任一接口，也可分别引用 `#/$defs/Today`、`
 | `/assets/policies/<id>.pdf` | 目录对应的政策原件，可按目录中的 SHA-256 校验 |
 | `/assets/app/latest.json` | App 正式版与公测版清单，`schemaVersion` 为 `1` |
 
-Cloudflare Pages 提供 `ETag`，`/assets/*` 使用 `Cache-Control: public, no-cache, no-transform`。条件请求可得到 `304`。迁移期间地图、政策目录和 PDF 同时保留在旧数据域名，客户端使用相同的路径。
+`/assets/*` 使用 `Cache-Control: public, no-cache, no-transform`。Cloudflare Pages 提供 `ETag`，条件请求可得到 `304`。Azure 按实际响应提供的验证头验证条件请求。旧版客户端也可从 Cloudflare 空教室站以相同路径读取地图、政策目录和 PDF。[生产响应验证](static-assets.md#验证生产响应)
 
 `release` 对应正式版，`prerelease` 对应公测版。任一渠道没有合格发布时，对应字段为 `null`。旧客户端仍可读取 `release`。版本必须为 `MAJOR.MINOR.PATCH`，每段为无前导零的十进制整数（零除外），`url` 指向同一版本的 GitHub Release 页面。版本对象的 `prerelease` 为布尔值。`changelog` 是可选的纯文本字符串数组，最多五条，每条最多 160 个 Unicode 码点。清单最多 16 KiB。以下为虚构示例。
 

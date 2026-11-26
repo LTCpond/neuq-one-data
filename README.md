@@ -2,12 +2,12 @@
 
 NEUQ One 的非官方公共数据与静态资源服务。Go Collector 从学校教务系统采集空教室数据，生成包含教室编号、容量、设备分类、目标日期、空闲时段和实际采集时间的 JSON。
 
-空教室默认覆盖今天及未来六天、每天六个课节组，以及工学馆、科技楼和人文楼。两个 Cloudflare Pages 项目共用本仓库，分别发布。
+空教室默认覆盖今天及未来六天、每天六个课节组，以及工学馆、科技楼和人文楼。空教室和静态资源各自发布到 Azure Static Web Apps 和 Cloudflare Pages。未来客户端以 Azure 为主源、Cloudflare 为备用，已发布客户端继续使用原有 Cloudflare 地址。
 
-| 生产地址 | 内容 | 发布入口 |
-| --- | --- | --- |
-| `https://neuq-one-data.pages.dev` | 空教室快照与采集状态，迁移期间兼容旧客户端的地图和政策请求 | [`classrooms.yml`](.github/workflows/classrooms.yml) |
-| `https://neuq-one-assets.pages.dev` | 校园地图、学校政策目录及 PDF、App 版本清单 | [`assets.yml`](.github/workflows/assets.yml) |
+| 内容 | Azure 生产应用 | Cloudflare 生产地址 | 发布入口 |
+| --- | --- | --- | --- |
+| 空教室快照与采集状态 | 空教室应用的 `*.azurestaticapps.net` 地址 | `https://neuq-one-data.pages.dev`，同时提供旧客户端的地图和政策文件 | [`classrooms.yml`](.github/workflows/classrooms.yml) |
+| 校园地图、学校政策目录及 PDF、App 版本清单 | 静态资源应用的 `*.azurestaticapps.net` 地址 | `https://neuq-one-assets.pages.dev` | [`assets.yml`](.github/workflows/assets.yml) |
 
 App 版本清单保留正式版 `release` 字段，另用 `prerelease` 提供最新公测版。两个渠道都可从 GitHub Release Notes 的「本次更新」节生成简短摘要。[静态发布流程](docs/static-assets.md)
 
@@ -19,11 +19,11 @@ App 版本清单保留正式版 `release` 字段，另用 `prerelease` 提供最
 
 ## 架构与更新频率
 
-**Cloudflare Workers Cron Triggers → GitHub REST API `workflow_dispatch` → GitHub Actions → Go Collector → Cloudflare Pages → Flutter 客户端**
+**Cloudflare Workers Cron Triggers → GitHub REST API `workflow_dispatch` → GitHub Actions → Go Collector → Azure Static Web Apps 与 Cloudflare Pages**
 
-Cloudflare Worker `neuq-one-scheduler` 用加密 Secret `GITHUB_TOKEN` 调用 GitHub REST API，触发默认分支上的 [`classrooms.yml`](.github/workflows/classrooms.yml)。GitHub Actions 构建并运行 Go Collector，校验快照后把兼容资源复制到 `public/assets/`，再通过 Wrangler 发布至 `neuq-one-data`。
+Cloudflare Worker `neuq-one-scheduler` 用加密 Secret `GITHUB_TOKEN` 调用 GitHub REST API，触发默认分支上的 [`classrooms.yml`](.github/workflows/classrooms.yml)。GitHub Actions 运行一次 Go Collector，后续两个发布任务分别使用同一份已验证的快照。Cloudflare 发布任务还复制旧客户端兼容资源。
 
-[`assets.yml`](.github/workflows/assets.yml) 在 `main` 的静态资源、构建脚本、响应头或工作流配置变更后运行，也可手动触发。App 仓库发布正式 GitHub Release 后，通过独立工作流触发同一次静态构建和发布。静态构建只读取仓库文件和公开的 Release 元数据。[静态资源部署与版本更新](docs/static-assets.md)
+[`assets.yml`](.github/workflows/assets.yml) 在 `main` 的静态资源、构建脚本、响应头或工作流配置变更后运行，也可手动触发。App 仓库的 GitHub Release 发布、编辑、撤回或删除会触发同一工作流。每次构建一份静态资源和双渠道版本清单，两个平台分别发布。[静态资源部署与版本更新](docs/static-assets.md)
 
 Worker 的 Cron 表达式为 `5 * * * *`，按 UTC 调度。每次请求都带 `publish=true` 和 `bootstrap=false`。
 
@@ -47,7 +47,7 @@ go build ./...
 
 ```sh
 node scripts/build-assets.mjs
-node --test scripts/test-build-assets.mjs
+node --test scripts/test-*.mjs
 ```
 
 实际采集前，请确认学校允许该账号自动查询、允许所选部署环境访问教务入口，并允许公开分发空教室数据。使用获授权的专用账号，通过进程环境注入凭据。程序直接读取环境变量，`.env.example` 提供配置清单。
@@ -79,6 +79,8 @@ bash scripts/stage-assets.sh
 | `NEUQ_USERNAME`、`NEUQ_PASSWORD` | 获授权的教务专用账号凭据 |
 | `CLOUDFLARE_API_TOKEN` | 具有 **Account → Cloudflare Pages → Edit** 权限的部署令牌 |
 | `CLOUDFLARE_ACCOUNT_ID` | Pages 项目所在的 Cloudflare 账户 ID |
+| `AZURE_STATIC_WEB_APPS_API_TOKEN` | Azure 静态资源应用的部署令牌，可复用现有令牌 |
+| `AZURE_DATA_SCHEDULE_API_TOKEN` | Azure 空教室应用的部署令牌 |
 
 ### GitHub Actions Variables
 
@@ -111,17 +113,15 @@ bash scripts/stage-assets.sh
 
 ## 部署
 
-静态站首次部署需创建独立 Direct Upload 项目，沿用本仓库的 Cloudflare Secrets。新版客户端上线前，先运行 **Deploy static assets** 并验证生产 URL。旧版客户端的地图和政策继续随空教室快照发布，确认兼容期结束后再移除旧工作流的静态复制步骤。[静态站和正式 Release 配置](docs/static-assets.md)
-
-静态资源也可手动部署到独立的 Azure Static Web Apps 免费版站点，用于国内网络访问测试。[Azure 测试部署](docs/static-assets.md#azure-static-web-apps-免费版测试部署)
+在 Azure 配置两个 **Free** 应用和对应的 GitHub Secrets。静态资源可复用原测试站，空教室使用独立应用。保留现有 Cloudflare Direct Upload 项目作为备用。首次运行后，分别检查两个平台的发布任务和生产响应。[Azure 应用创建、部署及响应验证](docs/static-assets.md#azure-static-web-apps-生产部署)
 
 ### 建立第一个生产快照
 
 1. 在 Cloudflare 控制台的 **Workers & Pages** 创建 Direct Upload 项目。记录项目名和账户 ID。也可运行 `npx wrangler@4.168.0 pages project create neuq-one-data --production-branch main`。生产分支应与 GitHub 默认分支一致。默认 Pages 子域名即可使用。[Direct Upload 创建指南](https://developers.cloudflare.com/pages/get-started/direct-upload/)
 2. 在该账户创建自定义 API Token，权限设为 **Account → Cloudflare Pages → Edit**，资源范围限定为该账户。[Cloudflare CI 权限配置](https://developers.cloudflare.com/pages/how-to/use-direct-upload-with-continuous-integration/)
-3. 在 GitHub **Settings → Secrets and variables → Actions** 添加上表的四项 Secrets，通过 **Variables** 设置项目名、生产地址和获授权的访问方式。Pages 分配带后缀的子域名时，将 `NEUQ_PUBLIC_ORIGIN` 设为实际生产站点的 HTTPS 根地址。
+3. 在 GitHub **Settings → Secrets and variables → Actions** 添加上表涉及采集和空教室发布的 Secrets，通过 **Variables** 设置项目名、生产地址和获授权的访问方式。Pages 分配带后缀的子域名时，将 `NEUQ_PUBLIC_ORIGIN` 设为实际 Cloudflare 空教室站点的 HTTPS 根地址。
 4. 在 **Actions → Collect classrooms → Run workflow** 选择仓库默认分支。生产站尚无快照时勾选 `bootstrap`，跳过读取历史。可先用 `mode=today`、`publish=false` 检查采集和校验日志，再用 `mode=week`、`publish=true` 完成首次发布。首个生产快照上线后，后续运行使用 `bootstrap=false`。
-5. 在生产域名分别请求 `/api/v1/classrooms/today.json`、`/api/v1/classrooms/week.json` 和 `/api/v1/status.json`。检查三份响应的 `generatedAt` 一致，`today.json` 的 `date` 为北京时间当天，各时段状态与房间列表匹配。
+5. 在 Cloudflare 用 `/api/v1/` 路径，在 Azure 用 `/data/v1/` 路径请求三份 JSON。检查 `generatedAt` 一致，`today.json` 的 `date` 为北京时间当天，各时段状态与房间列表匹配。[完整路径](docs/api.md#空教室-api-v1)
 
 ### 启用 Worker 调度
 
@@ -150,6 +150,7 @@ bash scripts/stage-assets.sh
 - **Cloudflare Workers Free** 每账户可配置 5 个 Cron Trigger，每天 100,000 次请求。每次 Cron 调用有 10 ms CPU 时间和 50 次外部子请求额度，等待网络响应的时间不计入 CPU 时间。 [Workers 平台限制](https://developers.cloudflare.com/workers/platform/limits/)
 - **GitHub** 的公开仓库使用标准 GitHub 托管 Runner 时计算用量免费。私有仓库的计算和存储按账户计划计量。Worker 发出的请求受 GitHub REST API 限流约束。 [Actions 计费](https://docs.github.com/en/billing/concepts/product-billing/github-actions) · [REST API 限流](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)
 - **Cloudflare Pages Free** 的每月 500 次构建额度适用于 Git 集成。此项目由 GitHub Actions 生成静态文件，经 Wrangler Direct Upload 发布。Wrangler 上传限制为 20,000 个文件、单文件 25 MiB。静态文件请求免费且不限次数。按账户实际限制和用量核查发布频率，遇到部署配额限制时可降低 Worker 触发频率，生产域名继续提供上一版快照。 [Pages 平台限制](https://developers.cloudflare.com/pages/platform/limits/) · [Direct Upload](https://developers.cloudflare.com/pages/get-started/direct-upload/) · [静态请求计费](https://developers.cloudflare.com/pages/functions/pricing/)
+- **Azure Static Web Apps Free** 托管两个纯静态应用。两个应用共用订阅的免费带宽额度，每个环境都有存储和文件数上限。[Azure 免费版用量限制](https://learn.microsoft.com/en-us/azure/static-web-apps/quotas)
 
 ## 故障排查
 
@@ -161,8 +162,9 @@ bash scripts/stage-assets.sh
 | 认证失败、要求交互验证或学校拒绝访问 | 检查授权网络、账号状态和学校入口。若 WebVPN 要求设备校验或验证码，暂停 Worker 调度，向学校确认受支持的自动化接入方式 |
 | 楼栋时段查询失败或长期部分可用 | 对照官方界面与完整性日志。日期、时段、分页元数据或楼栋选项变化时，用新的脱敏样本更新解析规则 |
 | 历史快照读取失败 | 检查生产地址、HTTP 状态和 Schema。初次发布时 HTTP 404 表示无历史；其他读取错误会中止以保护线上旧数据 |
-| Wrangler 部署失败 | 检查 Token 权限、账户 ID、项目类型、项目名、生产分支和账户配额。校验通过后可手动重跑一次 |
-| 接口显示旧日期或未来日期未更新 | 依次检查 Worker 的触发记录、北京时间 00:05 请求的 `mode=week`、Actions 运行结果和 Pages 最后一次成功的生产部署。客户端按响应日期与各时段的 `expiresAt` 判断可用性 |
+| Cloudflare 发布失败 | 检查 Token 权限、账户 ID、项目类型、项目名、生产分支和账户配额。新开一次手动运行来重新生成产物 |
+| Azure 发布失败 | 检查对应应用的部署令牌、Secret 名和应用配额。检查日志中的应用 HTTPS 地址，空教室使用 `/data/v1/` |
+| 接口显示旧日期或未来日期未更新 | 依次检查 Worker 的触发记录、北京时间 00:05 请求的 `mode=week`、Actions 中两个平台的任务结果和各站最后一次成功发布。客户端按响应日期与各时段的 `expiresAt` 判断可用性 |
 
 在 Actions 日志中按 `building`、`date`、`period` 定位失败查询，结合 `attempt`、`error_code`、`page` 及分页计数判断发生在哪次尝试和哪一页。`楼栋采集统计` 汇总各日期各楼栋的最终结果。`采集统计` 中的 `first_success`、`retry_attempts`、`retry_success`、`success`、`failed` 分别表示首轮成功时段、实际补偿尝试、补偿成功时段、最终成功时段和最终失败时段。`requests` 包含认证、重定向、查询及各类重试对学校发送的 HTTP 请求。`failures_by_code` 统计最终失败时段，任务提前停止时尚未查询的时段计入 `not_attempted`，停止原因见 `stop_code`。`attempt_failures_by_code` 包含后来补偿成功的时段曾发生的失败。
 

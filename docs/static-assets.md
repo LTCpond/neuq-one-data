@@ -18,6 +18,10 @@
 
 如由其他工作流发布 Release，使用能触发后续 Actions 的 GitHub App 令牌或 PAT，或在成功发布后显式 dispatch `assets.yml`。APK 留在 GitHub Releases。[使用 `GITHUB_TOKEN` 触发工作流](https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication)
 
+**Deploy static assets** 的构建步骤使用 GitHub Actions 内置 `GITHUB_TOKEN`，以 `contents: read` 权限读取公开的最新正式 Release。GitHub Actions 会自动提供该令牌。本地使用 `--github-release` 联网构建时，也可通过同名环境变量提供令牌。响应为 `404` 时生成 `release: null`。[GitHub Actions 令牌认证](https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication)
+
+遇到限流、网络超时或 GitHub 临时服务错误时，构建最多发出三次请求。限流重试遵守 `Retry-After` 和 `x-ratelimit-reset`，缺少明确等待时间时从 60 秒开始退避。单次需要等待超过 120 秒时结束本次构建，生产站保留上一版。权限类 `403` 会直接失败。排查时查看构建步骤的 GitHub 错误原因、请求 ID 和限流响应头。日志中的令牌会被遮蔽。[GitHub REST API 限流说明](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)
+
 ## 地图来源与许可记录
 
 客户端原入口为东北大学秦皇岛分校迎新网的「学校地图」页面。该页标注版权归东北大学秦皇岛分校迎新网，页面上未见明确的转载许可。计划发布的原始图片及授权状态待维护者确认。确认后在本节记录原图的具体链接、版权人、允许公开转载的许可依据，以及要求保留的署名。[东北大学秦皇岛分校迎新网 · 学校地图](https://yx.neuq.edu.cn/shgl/xxdt.htm)

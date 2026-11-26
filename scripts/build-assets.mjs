@@ -1,24 +1,111 @@
 import { createHash } from 'node:crypto';
 import { cp, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 
 const appRepository = 'LTCpond/neuq-one';
 const versionTag = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 const maxFileBytes = 25 * 1024 * 1024;
 const maxPolicyIndexBytes = 128 * 1024;
+const maxReleaseAttempts = 3;
+const maxReleaseRetryDelay = 120_000;
+const releaseDiagnosticHeaders = [
+  'x-github-request-id',
+  'x-ratelimit-limit',
+  'x-ratelimit-remaining',
+  'x-ratelimit-used',
+  'x-ratelimit-reset',
+  'x-ratelimit-resource',
+  'retry-after',
+];
 
-export async function fetchLatestRelease(request = fetch) {
-  const response = await request(`https://api.github.com/repos/${appRepository}/releases/latest`, {
-    headers: { Accept: 'application/vnd.github+json' },
-    redirect: 'error',
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (response.status === 404) return null;
-  if (!response.ok) throw new Error(`读取 GitHub Release 失败（HTTP ${response.status}）`);
-  const release = await response.json();
-  if (!release || typeof release !== 'object') throw new Error('GitHub Release 响应无效');
-  return release;
+function safeLogValue(value, token) {
+  const redacted = token ? value.replaceAll(token, '[已隐藏]') : value;
+  return redacted.replace(/\b(?:github_pat_|gh[pousr]_)[A-Za-z0-9_]+\b/g, '[已隐藏]')
+    .replace(/[\p{Cc}\u2028\u2029]+/gu, ' ').trim().slice(0, 300);
+}
+
+function releaseApiFailure(response, body, token, now, backoff) {
+  const reason = typeof body?.message === 'string' ? body.message : response.statusText;
+  const details = [safeLogValue(reason, token)];
+  for (const name of releaseDiagnosticHeaders) {
+    const value = response.headers.get(name);
+    if (value !== null) details.push(`${name}=${safeLogValue(value, token)}`);
+  }
+  const message = [`读取 GitHub Release 失败（HTTP ${response.status}）`, ...details.filter(Boolean)].join(' | ');
+
+  const retryAfter = response.headers.get('retry-after');
+  const remaining = response.headers.get('x-ratelimit-remaining');
+  const reset = response.headers.get('x-ratelimit-reset');
+  const rateLimited = response.status === 429 || (response.status === 403 &&
+    (remaining === '0' || retryAfter !== null || /\brate[- ]limit\b/i.test(reason)));
+  if (!rateLimited && response.status < 500 && response.status !== 408) {
+    return { message, retryDelay: null };
+  }
+
+  const requestedDelay = /^\d+$/.test(retryAfter)
+    ? Number(retryAfter) * 1000
+    : Date.parse(retryAfter) - now;
+  const resetDelay = rateLimited && remaining === '0' && /^\d+$/.test(reset)
+    ? Number(reset) * 1000 - now
+    : NaN;
+  const fallback = rateLimited && Number.isNaN(requestedDelay) && Number.isNaN(resetDelay)
+    ? 60 * backoff
+    : backoff;
+  return {
+    message,
+    retryDelay: Math.max(fallback, requestedDelay || 0, resetDelay || 0),
+  };
+}
+
+export async function fetchLatestRelease(request = fetch, { wait = sleep, now = Date.now } = {}) {
+  const token = process.env.GITHUB_TOKEN?.trim();
+  const headers = { Accept: 'application/vnd.github+json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  for (let attempt = 1; ; attempt++) {
+    const backoff = 1000 * 2 ** (attempt - 1);
+    let response;
+    let body;
+    let message;
+    let retryDelay = backoff;
+    try {
+      response = await request(`https://api.github.com/repos/${appRepository}/releases/latest`, {
+        headers,
+        redirect: 'error',
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (response.status === 404) {
+        await response.body?.cancel().catch(() => {});
+        return null;
+      }
+      body = await response.json().catch((error) => {
+        if (!response.ok || error instanceof SyntaxError) return null;
+        throw error;
+      });
+    } catch (error) {
+      const reason = safeLogValue(String(error?.message ?? '请求失败'), token);
+      message = `读取 GitHub Release 时发生网络错误或超时（${reason}）`;
+    }
+
+    if (message === undefined) {
+      if (response.ok) {
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+          throw new Error('GitHub Release 响应无效');
+        }
+        return body;
+      }
+      ({ message, retryDelay } = releaseApiFailure(response, body, token, now(), backoff));
+    }
+
+    if (retryDelay === null || attempt === maxReleaseAttempts) throw new Error(message);
+    if (retryDelay > maxReleaseRetryDelay) {
+      throw new Error(`${message} | GitHub 要求的等待时间超过 120 秒，本次构建已停止`);
+    }
+    console.warn(`${message} | ${Math.ceil(retryDelay / 1000)} 秒后重试（第 ${attempt + 1}/${maxReleaseAttempts} 次请求）`);
+    await wait(retryDelay);
+  }
 }
 
 function makeManifest(release) {

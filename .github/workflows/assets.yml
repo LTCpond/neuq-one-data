@@ -32,6 +32,8 @@ jobs:
           node-version: 24
           package-manager-cache: false
       - name: Build static assets and latest release manifest
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/build-assets.mjs .work/assets-public --github-release
       - name: Install Wrangler
         run: npm install --prefix .work/wrangler --no-save --no-package-lock wrangler@4.168.0

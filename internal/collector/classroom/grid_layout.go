@@ -1,6 +1,7 @@
 package classroom
 
 import (
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -54,7 +55,7 @@ type gridLayout [maxGridColumns]struct {
 }
 
 // 每组行独立展开。只有显式 rowspan 可以把楼栋列延伸到下一行。
-func (layout *gridLayout) expand(cells *goquery.Selection, remainingRows int) (gridColumns, error) {
+func (layout *gridLayout) expand(cells *goquery.Selection, remainingRows int) (gridColumns, *integrityError) {
 	var columns gridColumns
 	for i := range layout {
 		span := &layout[i]
@@ -66,7 +67,7 @@ func (layout *gridLayout) expand(cells *goquery.Selection, remainingRows int) (g
 		span.remaining--
 	}
 
-	var invalid bool
+	var failure *integrityError
 	index := 0
 	cells.EachWithBreak(func(_ int, element *goquery.Selection) bool {
 		for index < len(columns) && columns[index].width != 0 {
@@ -74,14 +75,18 @@ func (layout *gridLayout) expand(cells *goquery.Selection, remainingRows int) (g
 		}
 		width, okWidth := spanLength(element.AttrOr("colspan", "1"), len(columns)-index, false)
 		height, okHeight := spanLength(element.AttrOr("rowspan", "1"), remainingRows, true)
-		if !okWidth || !okHeight {
-			invalid = true
+		if !okWidth {
+			failure = integrity(codeTableStructure, "colspan 无效或超出列数上限")
+			return false
+		}
+		if !okHeight {
+			failure = integrity(codeTableStructure, "rowspan 无效")
 			return false
 		}
 		cell := gridCell{text: compact(element.Text()), width: width}
 		for i := index; i < index+width; i++ {
 			if columns[i].width != 0 {
-				invalid = true
+				failure = integrity(codeTableStructure, "单元格与已有合并单元格重叠", slog.Int("overlapping_column", i+1))
 				return false
 			}
 			columns[i] = cell
@@ -90,8 +95,8 @@ func (layout *gridLayout) expand(cells *goquery.Selection, remainingRows int) (g
 		index += width
 		return true
 	})
-	if invalid {
-		return columns, errResult
+	if failure != nil {
+		return columns, failure.with(slog.Int("column", index+1), slog.Int("cell_count", cells.Length()))
 	}
 	return columns, nil
 }
@@ -112,7 +117,7 @@ type roomColumns struct {
 	name, building, equipment, capacity int
 }
 
-func readRoomColumns(table *goquery.Selection) (roomColumns, bool, error) {
+func readRoomColumns(table *goquery.Selection) (roomColumns, bool, *integrityError) {
 	rows := table.ChildrenFiltered("thead").ChildrenFiltered("tr")
 	if rows.Length() == 0 {
 		return roomColumns{1, 2, 4, 5}, false, nil
@@ -122,7 +127,7 @@ func readRoomColumns(table *goquery.Selection) (roomColumns, bool, error) {
 	for i, row := range rows.EachIter() {
 		columns, err := layout.expand(row.ChildrenFiltered("th, td"), rows.Length()-i)
 		if err != nil {
-			return positions, true, err
+			return positions, true, err.with(slog.String("section", "thead"), slog.Int("row", i+1))
 		}
 		for j, cell := range columns {
 			var position *int
@@ -140,13 +145,14 @@ func readRoomColumns(table *goquery.Selection) (roomColumns, bool, error) {
 				continue
 			}
 			if *position >= 0 && *position != j {
-				return positions, true, errResult
+				return positions, true, integrity(codeTableStructure, "同一教室字段出现在不同表头列",
+					slog.String("section", "thead"), slog.Int("row", i+1), slog.Int("column", j+1), slog.Int("first_column", *position+1))
 			}
 			*position = j
 		}
 	}
 	if positions.name < 0 {
-		return positions, true, errResult
+		return positions, true, integrity(codeTableStructure, "表头缺少可识别的教室名称列", slog.String("section", "thead"))
 	}
 	return positions, true, nil
 }

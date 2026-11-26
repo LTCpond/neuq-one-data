@@ -59,6 +59,7 @@ jobs:
           NEUQ_MAX_REQUESTS: ${{ vars.NEUQ_MAX_REQUESTS }}
           NEUQ_MAX_PAGES: ${{ vars.NEUQ_MAX_PAGES }}
           NEUQ_RETRIES: ${{ vars.NEUQ_RETRIES }}
+          NEUQ_SLOT_RETRIES: ${{ vars.NEUQ_SLOT_RETRIES }}
           NEUQ_TODAY_TTL: ${{ vars.NEUQ_TODAY_TTL }}
           NEUQ_FUTURE_TTL: ${{ vars.NEUQ_FUTURE_TTL }}
         run: |

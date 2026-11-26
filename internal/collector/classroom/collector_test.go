@@ -46,6 +46,11 @@ func (f transportFunc) RoundTrip(r *http.Request) (*http.Response, error) { retu
 
 func newCollector(t *testing.T, vpn bool, timeout time.Duration, handler http.HandlerFunc) *Collector {
 	t.Helper()
+	return newCollectorWithBudget(t, vpn, timeout, 60, handler)
+}
+
+func newCollectorWithBudget(t *testing.T, vpn bool, timeout time.Duration, budget int, handler http.HandlerFunc) *Collector {
+	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	target, _ := url.Parse(server.URL)
@@ -61,7 +66,7 @@ func newCollector(t *testing.T, vpn bool, timeout time.Duration, handler http.Ha
 		routes.EAMS, _ = url.Parse("https://vpn.neuq.edu.cn/http/0123456789abcdef0123456789abcdef/eams/")
 	}
 	return &Collector{
-		Session:   &auth.Session{HTTP: client.New(httpClient, routes.Allow, timeout, 0, 60, 0), Routes: routes, Username: "mock", Password: "password"},
+		Session:   &auth.Session{HTTP: client.New(httpClient, routes.Allow, timeout, 0, budget, 0), Routes: routes, Username: "mock", Password: "password"},
 		Buildings: []string{"工学馆", "科技楼", "人文楼"}, MaxPages: 4, TodayTTL: 2 * time.Hour, FutureTTL: 26 * time.Hour,
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
@@ -312,10 +317,11 @@ func TestStopsForSchoolRestrictionsAndTimeout(t *testing.T) {
 				w.WriteHeader(tc.code)
 				fmt.Fprint(w, tc.body)
 			}))
+			c.SlotRetries = 2
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			result := c.Run(ctx, time.Now(), 1, 1)
-			if !errors.Is(result.Failure, tc.want) || calls.Load() != tc.calls || result.SuccessfulSlots != 0 {
+			if !errors.Is(result.Failure, tc.want) || calls.Load() != tc.calls || result.SuccessfulSlots != 0 || result.RetryAttempts != 0 {
 				t.Fatalf("得到错误 %v，共 %d 次查询", result.Failure, calls.Load())
 			}
 		})

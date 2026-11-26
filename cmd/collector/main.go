@@ -77,14 +77,14 @@ func collect(ctx context.Context, mode, output, previous string, logger *slog.Lo
 	school := client.New(http.DefaultClient, routes.Allow, c.Timeout, c.Delay, c.MaxRequests, c.Retries)
 	collector := classroom.Collector{
 		Session:   &auth.Session{HTTP: school, Routes: routes, Username: c.Username, Password: c.Password},
-		Buildings: c.Buildings, MaxPages: c.MaxPages, TodayTTL: c.TodayTTL, FutureTTL: c.FutureTTL, Log: logger,
+		Buildings: c.Buildings, MaxPages: c.MaxPages, SlotRetries: c.SlotRetries,
+		TodayTTL: c.TodayTTL, FutureTTL: c.FutureTTL, Log: logger,
 	}
 	collectDays := c.Days
 	if mode == "today" {
 		collectDays = 1
 	}
 	newData := collector.Run(ctx, start, c.Days, collectDays)
-	logger.Info("采集统计", "requests", school.Count(), "success", newData.SuccessfulSlots, "planned", collectDays*len(c.Buildings)*len(model.Periods), "failure", newData.Failure)
 	if errors.Is(newData.Failure, client.ErrDenied) || errors.Is(newData.Failure, client.ErrChallenge) ||
 		errors.Is(newData.Failure, auth.ErrLogin) || errors.Is(newData.Failure, client.ErrExpired) {
 		return newData.Failure

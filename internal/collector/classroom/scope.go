@@ -7,6 +7,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/LTCpond/neuq-one-data/internal/auth"
+	"github.com/LTCpond/neuq-one-data/internal/client"
 )
 
 var errScope = errors.New("响应的日期、时段、楼栋或页码与请求不符")
@@ -22,7 +25,11 @@ func (*scopeMismatch) Error() string { return errScope.Error() }
 func (*scopeMismatch) Unwrap() error { return errScope }
 
 func (c *Collector) warnQuery(ctx context.Context, message string, err error, attrs ...slog.Attr) {
-	attrs = append(attrs, slog.String("reason", err.Error()))
+	attrs = append(attrs, slog.String("reason", err.Error()), slog.Bool("retryable_integrity", retryableIntegrity(err)))
+	var integrity *integrityError
+	if errors.As(err, &integrity) {
+		attrs = append(attrs, integrity.attrs...)
+	}
 	var mismatch *scopeMismatch
 	if errors.As(err, &mismatch) {
 		attrs = append(attrs,
@@ -37,8 +44,48 @@ func (c *Collector) warnQuery(ctx context.Context, message string, err error, at
 			attrs = append(attrs, slog.Int("row", mismatch.row))
 			attrs = append(attrs, mismatch.shape.attrs()...)
 		}
+	} else {
+		var page *pageFailure
+		if errors.As(err, &page) {
+			attrs = append(attrs, slog.Int("page", page.page))
+		}
 	}
 	c.Log.LogAttrs(ctx, slog.LevelWarn, message, attrs...)
+}
+
+func failureCode(err error) string {
+	var integrity *integrityError
+	if errors.As(err, &integrity) {
+		return integrity.code
+	}
+	switch {
+	case errors.Is(err, errScope):
+		return "scope_mismatch"
+	case errors.Is(err, client.ErrDenied):
+		return "access_denied"
+	case errors.Is(err, client.ErrChallenge):
+		return "verification_required"
+	case errors.Is(err, auth.ErrLogin):
+		return "authentication_failed"
+	case errors.Is(err, client.ErrBudget):
+		return "request_budget_exhausted"
+	case errors.Is(err, context.Canceled):
+		return "context_canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "task_deadline_exceeded"
+	case errors.Is(err, client.ErrExpired):
+		return "session_expired"
+	case errors.Is(err, client.ErrTooLarge):
+		return "response_too_large"
+	case errors.Is(err, client.ErrProtocol):
+		return "protocol_error"
+	case errors.Is(err, client.ErrNetwork):
+		return "network_error"
+	case errors.Is(err, client.ErrUnavailable):
+		return "upstream_unavailable"
+	default:
+		return "unknown_error"
+	}
 }
 
 var safeDate = regexp.MustCompile(`^[0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2}$`)

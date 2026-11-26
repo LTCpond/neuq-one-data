@@ -20,13 +20,14 @@ import (
 )
 
 var (
-	ErrExpired   = errors.New("教务会话失效")
-	ErrDenied    = errors.New("学校拒绝或限制访问")
-	ErrChallenge = errors.New("学校要求交互验证")
-	ErrBudget    = errors.New("已用完请求预算")
-	ErrTooLarge  = errors.New("学校响应超过大小限制")
-	ErrProtocol  = errors.New("学校响应或重定向不符合预期")
-	ErrNetwork   = errors.New("学校请求网络异常或超时")
+	ErrExpired     = errors.New("教务会话失效")
+	ErrDenied      = errors.New("学校拒绝或限制访问")
+	ErrChallenge   = errors.New("学校要求交互验证")
+	ErrBudget      = errors.New("已用完请求预算")
+	ErrTooLarge    = errors.New("学校响应超过大小限制")
+	ErrProtocol    = errors.New("学校响应或重定向不符合预期")
+	ErrNetwork     = errors.New("学校请求网络异常或超时")
+	ErrUnavailable = errors.New("学校暂时不可用")
 )
 
 const maxBody = 2_000_000
@@ -58,6 +59,8 @@ func New(httpClient *http.Client, allow func(*url.URL) bool, timeout, interval t
 }
 
 func (c *Client) Count() int { return int(c.count.Load()) }
+
+func (c *Client) BudgetExhausted() bool { return c.Count() >= c.max }
 
 func (c *Client) Do(ctx context.Context, target *url.URL, form url.Values, ajax, retry bool) (Page, error) {
 	select {
@@ -92,7 +95,7 @@ func (c *Client) Do(ctx context.Context, target *url.URL, form url.Values, ajax,
 
 func (c *Client) request(ctx context.Context, method string, target *url.URL, form url.Values, ajax, retry bool) (Page, *url.URL, error) {
 	for attempt := 0; ; attempt++ {
-		if c.Count() >= c.max {
+		if c.BudgetExhausted() {
 			return Page{}, nil, ErrBudget
 		}
 		if err := wait(ctx, time.Until(c.next)); err != nil {
@@ -154,7 +157,7 @@ func (c *Client) send(req *http.Request) (Page, *url.URL, bool, time.Duration, e
 	case http.StatusRequestEntityTooLarge:
 		return Page{}, nil, false, after, ErrTooLarge
 	case 408, 500, 502, 503, 504:
-		return Page{}, nil, true, after, fmt.Errorf("学校暂时不可用（HTTP %d）", resp.StatusCode)
+		return Page{}, nil, true, after, fmt.Errorf("%w（HTTP %d）", ErrUnavailable, resp.StatusCode)
 	case http.StatusOK:
 	default:
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 {

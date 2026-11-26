@@ -17,12 +17,12 @@ const (
 )
 
 type Config struct {
-	Username, Password                               string
-	UseVPN                                           bool
-	EAMS                                             *url.URL
-	Buildings                                        []string
-	Days, MaxRequests, MaxPages, Retries             int
-	Delay, Timeout, TaskTimeout, TodayTTL, FutureTTL time.Duration
+	Username, Password                                string
+	UseVPN                                            bool
+	EAMS                                              *url.URL
+	Buildings                                         []string
+	Days, MaxRequests, MaxPages, Retries, SlotRetries int
+	Delay, Timeout, TaskTimeout, TodayTTL, FutureTTL  time.Duration
 }
 
 var BuildingName = regexp.MustCompile(`^[\p{Han}]{2,16}$`)
@@ -85,6 +85,7 @@ func Load() (Config, error) {
 	c.MaxRequests = number("NEUQ_MAX_REQUESTS", 200, 1, 250)
 	c.MaxPages = number("NEUQ_MAX_PAGES", 4, 1, 10)
 	c.Retries = number("NEUQ_RETRIES", 2, 0, 4)
+	c.SlotRetries = number("NEUQ_SLOT_RETRIES", 2, 0, 4)
 	c.Delay = duration("NEUQ_REQUEST_DELAY", 2*time.Second, time.Second, time.Minute)
 	c.Timeout = duration("NEUQ_REQUEST_TIMEOUT", 20*time.Second, time.Second, time.Minute)
 	c.TaskTimeout = duration("NEUQ_TASK_TIMEOUT", 12*time.Minute, time.Minute, 12*time.Minute)

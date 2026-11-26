@@ -1,8 +1,8 @@
 package classroom
 
 import (
-	"errors"
 	"html"
+	"log/slog"
 	"net/url"
 	"regexp"
 	"slices"
@@ -11,8 +11,6 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 )
-
-var errResult = errors.New("无法确认空教室结果的完整性")
 
 var params = regexp.MustCompile(`\bvar\s+_paramstring\s*=\s*["']([^"']*)["']`)
 var anyGridPaging = regexp.MustCompile(`\bpage_[\w-]+\.pageInfo\(`)
@@ -23,52 +21,55 @@ var emptyResult = regexp.MustCompile(`^(?:暂无(?:空闲|空)教室|没有(?:�
 type grid struct {
 	rows               []room
 	total, size, pages int
-	explicitEmpty      bool
 	buildingConfirmed  bool
 }
 
 func parseGrid(doc *goquery.Document, requested url.Values, page int) (grid, error) {
-	var g grid
+	g := grid{total: -1, pages: -1}
 	scripts := doc.Find("script").Map(func(_ int, script *goquery.Selection) string { return script.Text() })
 	content := doc.Find("body").Clone()
 	content.Find("script, style, template").Remove()
 	body := content.Text()
 
 	table := doc.Find("table.gridtable")
-	if table.Length() == 0 && page == 1 && emptyResult.MatchString(compact(body)) {
+	if table.Length() == 0 && emptyResult.MatchString(compact(body)) {
 		if _, err := checkEcho(scripts, nil, requested, page, false); err != nil {
 			return g, err
 		}
-		return grid{total: 0, pages: 1, explicitEmpty: true}, nil
+		if page == 1 {
+			g.total, g.pages = 0, 1
+		}
+		return g, nil
 	}
 	if table.Length() != 1 {
-		return g, errResult
+		return g, integrity(codeTableStructure, "结果表格数量不符", slog.Int("table_count", table.Length()))
 	}
 	tbody := table.ChildrenFiltered("tbody")
 	if tbody.Length() != 1 {
-		return g, errResult
+		return g, integrity(codeTableStructure, "结果表格的 tbody 数量不符", slog.Int("tbody_count", tbody.Length()))
 	}
 
-	positions, hasHeaders, err := readRoomColumns(table)
-	if err != nil {
-		return g, err
+	positions, hasHeaders, columnsErr := readRoomColumns(table)
+	if columnsErr != nil {
+		return g, columnsErr
 	}
 	rows := tbody.ChildrenFiltered("tr")
 	var layout gridLayout
+	var explicitEmpty bool
 	for i, row := range rows.EachIter() {
 		cells := row.ChildrenFiltered("td, th")
 		columns, err := layout.expand(cells, rows.Length()-i)
 		if err != nil {
-			return g, err
+			return g, err.with(slog.String("section", "tbody"), slog.Int("row", i+1))
 		}
 		if row.ChildrenFiltered("td").Length() == 0 {
 			if cells.Length() == 0 {
-				return g, errResult
+				return g, integrity(codeTableStructure, "结果行缺少单元格", slog.String("section", "tbody"), slog.Int("row", i+1))
 			}
 			continue
 		}
 		if cells.Length() == 1 && emptyResult.MatchString(compact(cells.Text())) {
-			g.explicitEmpty = true
+			explicitEmpty = true
 			continue
 		}
 		name, building := columns.cell(positions.name), columns.cell(positions.building)
@@ -92,18 +93,18 @@ func parseGrid(doc *goquery.Document, requested url.Values, page int) (grid, err
 		}
 		g.rows = append(g.rows, r)
 	}
-	if g.explicitEmpty && len(g.rows) > 0 {
-		return g, errResult
+	if explicitEmpty && len(g.rows) > 0 {
+		return g, integrity(codeTableStructure, "空结果提示与数据行同时出现")
 	}
 
-	g.total, g.pages = -1, -1
-	g.total, err = matchCount(totals, body)
-	if err != nil {
-		return g, err
+	var countErr *integrityError
+	g.total, countErr = matchCount(totals, body, "text.record_total")
+	if countErr != nil {
+		return g, countErr
 	}
-	g.pages, err = matchCount(pageTotals, body)
-	if err != nil {
-		return g, err
+	g.pages, countErr = matchCount(pageTotals, body, "text.page_total")
+	if countErr != nil {
+		return g, countErr
 	}
 
 	id := table.AttrOr("id", "")
@@ -116,38 +117,46 @@ func parseGrid(doc *goquery.Document, requested url.Values, page int) (grid, err
 		paging = regexp.MustCompile(`\bpage_` + regexp.QuoteMeta(id) + `\.pageInfo\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)`)
 		if matches := paging.FindAllStringSubmatch(strings.Join(scripts, "\n"), -1); len(matches) > 0 {
 			if len(matches) != 1 {
-				return g, errResult
+				return g, integrity(codePagingConflict, "同一表格出现多个 pageInfo 声明", slog.Int("declaration_count", len(matches)))
 			}
 			reportedPage, e1 := strconv.Atoi(matches[0][1])
 			size, e2 := strconv.Atoi(matches[0][2])
 			total, e3 := strconv.Atoi(matches[0][3])
-			if e1 != nil || e2 != nil || e3 != nil || size < 1 || size > 10_000 ||
-				total > 100_000 || (g.total >= 0 && g.total != total) {
-				return g, errResult
+			invalidField := ""
+			switch {
+			case e1 != nil:
+				invalidField = "pageNo"
+			case e2 != nil || size < 1 || size > 10_000:
+				invalidField = "pageSize"
+			case e3 != nil || total > 100_000:
+				invalidField = "recordTotal"
+			}
+			if invalidField != "" {
+				return g, integrity(codePagingInvalid, "pageInfo 字段超出有效范围", slog.String("source", "grid.pageInfo"), slog.String("field", invalidField))
 			}
 			if reportedPage != page {
 				return g, &scopeMismatch{source: "grid.pageInfo", field: "pageNo",
 					expected: strconv.Itoa(page), actual: echoDiagnostic("pageNo", matches[0][1:2]), page: page}
 			}
+			if g.total >= 0 && g.total != total {
+				return g, integrity(codePagingConflict, "页面文字与 pageInfo 的记录总数不同",
+					slog.Int("text_total_records", g.total), slog.Int("page_info_total_records", total), slog.Int("reported_page_size", size))
+			}
 			g.total, g.size = total, size
 			pageConfirmed = true
 		}
 	}
-	g.buildingConfirmed, err = checkEcho(scripts, paging, requested, page, pageConfirmed)
+	confirmed, err := checkEcho(scripts, paging, requested, page, pageConfirmed)
 	if err != nil {
 		return g, err
 	}
 
-	switch {
-	case g.total == 0 || g.explicitEmpty:
-		if len(g.rows) != 0 || page != 1 || g.total > 0 || g.pages > 1 {
-			return g, errResult
+	g.buildingConfirmed = confirmed
+	if page == 1 && explicitEmpty {
+		if g.total > 0 || g.pages > 1 {
+			return g, integrity(codePagingConflict, "空结果提示与分页计数不符")
 		}
 		g.total, g.pages = 0, 1
-	case len(g.rows) == 0:
-		return g, errResult
-	case g.total >= 0 && len(g.rows) > g.total:
-		return g, errResult
 	}
 	return g, nil
 }
@@ -248,12 +257,16 @@ func sameEcho(key, expected, actual string) bool {
 	}
 }
 
-func matchCount(re *regexp.Regexp, text string) (int, error) {
+func matchCount(re *regexp.Regexp, text, source string) (int, *integrityError) {
 	result := -1
 	for _, match := range re.FindAllStringSubmatch(text, -1) {
 		current, err := strconv.Atoi(match[1])
-		if err != nil || current > 100_000 || (result >= 0 && result != current) {
-			return -1, errResult
+		if err != nil || current > 100_000 {
+			return -1, integrity(codePagingInvalid, "页面文字中的计数超出有效范围", slog.String("source", source))
+		}
+		if result >= 0 && result != current {
+			return -1, integrity(codePagingConflict, "同一页面出现不同的计数", slog.String("source", source),
+				slog.Int("first_count", result), slog.Int("conflicting_count", current))
 		}
 		result = current
 	}
@@ -262,7 +275,7 @@ func matchCount(re *regexp.Regexp, text string) (int, error) {
 
 func (g grid) plan() (pages, size int, err error) {
 	if g.total < 0 && g.pages < 1 {
-		return 0, 0, errResult
+		return 0, 0, integrity(codePagingMissing, "首页缺少可用的页数和记录总数")
 	}
 	size = g.size
 	if size == 0 {
@@ -272,7 +285,7 @@ func (g grid) plan() (pages, size int, err error) {
 	if g.total >= 0 {
 		calculated := max(1, (g.total+size-1)/size)
 		if pages > 0 && pages != calculated {
-			return 0, 0, errResult
+			return 0, size, integrity(codePagingConflict, "首页页数与按记录总数计算的页数不符", slog.Int("calculated_pages", calculated))
 		}
 		pages = calculated
 	}

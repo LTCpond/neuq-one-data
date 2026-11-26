@@ -58,7 +58,7 @@ go run ./cmd/collector -verify -output public
 bash scripts/stage-assets.sh
 ```
 
-`-mode today` 只查询当天，仍生成配置天数的快照，未来日期从历史快照按同日期补齐。`-previous` 接受 HTTPS 站点根地址或本地 `week.json` 文件。首次生成时可省略，本地重跑时请给 `-output` 一个尚未创建的目录。学校响应、Cookie 和认证表单只在进程内存中处理。日志只记录查询日期、楼栋、时段和归类后的失败原因。并行运行受本地工作目录锁和同仓库工作流并发组限制。
+`-mode today` 只查询当天，仍生成配置天数的快照，未来日期从历史快照按同日期补齐。`-previous` 接受 HTTPS 站点根地址或本地 `week.json` 文件。首次生成时可省略，本地重跑时请给 `-output` 一个尚未创建的目录。学校响应、Cookie 和认证表单只在进程内存中处理。日志记录查询日期、楼栋、时段、错误码和经过脱敏的诊断字段。并行运行受本地工作目录锁和同仓库工作流并发组限制。
 
 ## 配置
 
@@ -94,6 +94,7 @@ bash scripts/stage-assets.sh
 | `NEUQ_MAX_REQUESTS` | `200`，限制认证、重定向、采集和重试的请求数 |
 | `NEUQ_MAX_PAGES` | `4`，每个查询范围的页数上限 |
 | `NEUQ_RETRIES` | `2`，每次临时请求失败后最多重试次数 |
+| `NEUQ_SLOT_RETRIES` | `2`，每个楼栋时段因疑似临时的完整性异常而额外补偿的次数，可配 0 到 4，`0` 关闭补偿 |
 | `NEUQ_TODAY_TTL` | `2h`，当天时段从实际采集起的有效期 |
 | `NEUQ_FUTURE_TTL` | `26h`，未来时段从实际采集起的有效期 |
 | `NEUQ_PUBLIC_ORIGIN` | Actions 默认从 `https://<项目名>.pages.dev` 恢复历史。以 Pages 实际生产地址为准 |
@@ -102,7 +103,9 @@ bash scripts/stage-assets.sh
 
 自动调度由 Worker 的 Cron Trigger 控制。旧变量 `NEUQ_COLLECTION_ENABLED` 属于迁移前的 Actions 定时配置，可从 Actions Variables 移除。
 
-查询按日期和时段串行执行。每个时段按 `NEUQ_BUILDINGS` 的配置顺序逐栋查询，默认依次查询工学馆、科技楼、人文楼。楼栋编号缺失时，该楼栋时段保持不可用。部分失败时，同日期已有的有效历史数据可标为 `stale` 并保留原始采集时间。临时网络和服务器错误用指数退避、抖动和 `Retry-After` 控制重试。认证失败、交互验证和访问限制会终止任务。若整体失败、跨北京时间午夜或校验失败，保留上一版线上快照。
+查询按日期和时段串行执行。每个时段按 `NEUQ_BUILDINGS` 的配置顺序逐栋查询，默认依次查询工学馆、科技楼、人文楼。首轮结束后，页数、记录总数或分页大小在页间变化，跨页重复或记录数不符的时段按原顺序逐轮补偿。默认两轮分别在等待 1 秒和 2 秒后开始，每次从第一页重新查完整个楼栋时段，沿用同一个请求预算、请求间隔和任务截止时间。补偿成功按实际采集时间计算有效期。
+
+楼栋编号缺失、范围不符、分页上限及确定性的表格或分页元数据解析错误会直接保留失败状态。临时网络和服务器错误沿用请求层的指数退避、抖动和 `Retry-After`。认证失败、交互验证、访问限制、请求预算耗尽或任务取消会停止采集。部分失败时，同日期的历史数据可标为 `stale` 并保留原始采集时间。若整体失败、跨北京时间午夜或校验失败，保留上一版线上快照。
 
 ## 部署
 
@@ -156,6 +159,8 @@ bash scripts/stage-assets.sh
 | 历史快照读取失败 | 检查生产地址、HTTP 状态和 Schema。初次发布时 HTTP 404 表示无历史；其他读取错误会中止以保护线上旧数据 |
 | Wrangler 部署失败 | 检查 Token 权限、账户 ID、项目类型、项目名、生产分支和账户配额。校验通过后可手动重跑一次 |
 | 接口显示旧日期或未来日期未更新 | 依次检查 Worker 的触发记录、北京时间 00:05 请求的 `mode=week`、Actions 运行结果和 Pages 最后一次成功的生产部署。客户端按响应日期与各时段的 `expiresAt` 判断可用性 |
+
+在 Actions 日志中按 `building`、`date`、`period` 定位失败查询，结合 `attempt`、`error_code`、`page` 及分页计数判断发生在哪次尝试和哪一页。`楼栋采集统计` 汇总各日期各楼栋的最终结果。`采集统计` 中的 `first_success`、`retry_attempts`、`retry_success`、`success`、`failed` 分别表示首轮成功时段、实际补偿尝试、补偿成功时段、最终成功时段和最终失败时段。`requests` 包含认证、重定向、查询及各类重试对学校发送的 HTTP 请求。`failures_by_code` 统计最终失败时段，任务提前停止时尚未查询的时段计入 `not_attempted`，停止原因见 `stop_code`。`attempt_failures_by_code` 包含后来补偿成功的时段曾发生的失败。
 
 ## 许可证
 

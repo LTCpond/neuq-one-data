@@ -14,6 +14,6 @@ Flutter 通过 Riverpod 提供 `PublicDataClient`，公共请求不使用学校�
 
 - `/assets/maps/campus-map.png` 提供原分辨率 PNG。客户端先展示已校验的本地文件，联网校验更新时使用同一域名的 HTTP 验证信息。`304` 或请求和解码失败时继续使用已缓存的地图。
 - `/assets/policies/index.json` 提供政策目录，`/assets/policies/<id>.pdf` 提供对应原件。缓存目录可离线使用，PDF 按目录中的 SHA-256 校验后存储。
-- `/assets/app/latest.json` 提供可供客户端比较的版本号和 GitHub Release 页面。用户手动检查更新时读取清单，APK 从 GitHub Releases 下载。
+- `/assets/app/latest.json` 提供两个发布渠道的版本、GitHub Release 页面和纯文本摘要。客户端按安装包的构建渠道选择候选版本。手动和启动检查读取同一清单，APK 从 GitHub Releases 下载。[清单格式](api.md#静态资源)
 
 迁移期间，旧版客户端可在 `neuq-one-data` 的原路径访问地图和政策。先部署并验证静态站，再发布新版客户端。[静态资源接口](api.md#静态资源) · [部署顺序](static-assets.md)

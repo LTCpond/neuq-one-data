@@ -9,6 +9,8 @@ NEUQ One 的非官方公共数据与静态资源服务。Go Collector 从学校�
 | `https://neuq-one-data.pages.dev` | 空教室快照与采集状态，迁移期间兼容旧客户端的地图和政策请求 | [`classrooms.yml`](.github/workflows/classrooms.yml) |
 | `https://neuq-one-assets.pages.dev` | 校园地图、学校政策目录及 PDF、App 版本清单 | [`assets.yml`](.github/workflows/assets.yml) |
 
+App 版本清单保留正式版 `release` 字段，另用 `prerelease` 提供最新公测版。两个渠道都可从 GitHub Release Notes 的「本次更新」节生成简短摘要。[静态发布流程](docs/static-assets.md)
+
 - [API 文档](docs/api.md)及 [JSON Schema](docs/api-v1.schema.json)
 - [部署架构](docs/architecture.md)
 - [Flutter 接入设计](docs/flutter-integration.md)

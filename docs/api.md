@@ -51,11 +51,24 @@ JSON Schema 可直接校验任一接口，也可分别引用 `#/$defs/Today`、`
 | `/assets/maps/campus-map.png` | 全分辨率校园地图 PNG |
 | `/assets/policies/index.json` | 政策目录，`version` 为 `1`，`policies` 条目包含 `id`、`title`、`category` 和 `sha256` |
 | `/assets/policies/<id>.pdf` | 目录对应的政策原件，可按目录中的 SHA-256 校验 |
-| `/assets/app/latest.json` | App 正式版本清单，`schemaVersion` 为 `1` |
+| `/assets/app/latest.json` | App 正式版与公测版清单，`schemaVersion` 为 `1` |
 
 Cloudflare Pages 提供 `ETag`，`/assets/*` 使用 `Cache-Control: public, no-cache, no-transform`。条件请求可得到 `304`。迁移期间地图、政策目录和 PDF 同时保留在旧数据域名，客户端使用相同的路径。
 
-尚无正式 Release 时，版本清单返回 `{"schemaVersion":1,"release":null}`。有正式 Release 时，`release.version` 为 `MAJOR.MINOR.PATCH`，每段为无前导零的十进制整数（零除外），`release.url` 指向同一版本的 GitHub Release 页面。示例版本为虚构值。
+`release` 对应正式版，`prerelease` 对应公测版。任一渠道没有合格发布时，对应字段为 `null`。旧客户端仍可读取 `release`。版本必须为 `MAJOR.MINOR.PATCH`，每段为无前导零的十进制整数（零除外），`url` 指向同一版本的 GitHub Release 页面。版本对象的 `prerelease` 为布尔值。`changelog` 是可选的纯文本字符串数组，最多五条，每条最多 160 个 Unicode 码点。清单最多 16 KiB。以下为虚构示例。
+
+```json
+{
+  "schemaVersion": 1,
+  "release": null,
+  "prerelease": {
+    "version": "0.1.2",
+    "url": "https://github.com/LTCpond/neuq-one/releases/tag/v0.1.2",
+    "prerelease": true,
+    "changelog": ["改善课程提醒", "优化空教室刷新", "完善教务会话状态"]
+  }
+}
+```
 
 ```json
 {

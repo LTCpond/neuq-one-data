@@ -10,6 +10,8 @@ const maxFileBytes = 25 * 1024 * 1024;
 const maxPolicyIndexBytes = 128 * 1024;
 const maxReleaseAttempts = 3;
 const maxReleaseRetryDelay = 120_000;
+const releasePageSize = 100;
+const maxReleasePages = 20;
 const releaseDiagnosticHeaders = [
   'x-github-request-id',
   'x-ratelimit-limit',
@@ -59,11 +61,27 @@ function releaseApiFailure(response, body, token, now, backoff) {
   };
 }
 
-export async function fetchLatestRelease(request = fetch, { wait = sleep, now = Date.now } = {}) {
+export async function fetchPublishedReleases(request = fetch, { wait = sleep, now = Date.now } = {}) {
   const token = process.env.GITHUB_TOKEN?.trim();
   const headers = { Accept: 'application/vnd.github+json' };
   if (token) headers.Authorization = `Bearer ${token}`;
 
+  const latest = { release: null, prerelease: null };
+  for (let page = 1; page <= maxReleasePages; page++) {
+    const { releases, hasNext } = await fetchReleasePage(page, request, headers, token, wait, now);
+    for (const candidate of releases) {
+      if (!eligibleRelease(candidate)) continue;
+      const field = candidate.prerelease ? 'prerelease' : 'release';
+      if (!latest[field] || compareTags(candidate.tag_name, latest[field].tag_name) > 0) {
+        latest[field] = candidate;
+      }
+    }
+    if (!hasNext) return latest;
+  }
+  throw new Error('GitHub Release 列表超过可检查的页数');
+}
+
+async function fetchReleasePage(page, request, headers, token, wait, now) {
   for (let attempt = 1; ; attempt++) {
     const backoff = 1000 * 2 ** (attempt - 1);
     let response;
@@ -71,15 +89,11 @@ export async function fetchLatestRelease(request = fetch, { wait = sleep, now = 
     let message;
     let retryDelay = backoff;
     try {
-      response = await request(`https://api.github.com/repos/${appRepository}/releases/latest`, {
+      response = await request(`https://api.github.com/repos/${appRepository}/releases?per_page=${releasePageSize}&page=${page}`, {
         headers,
         redirect: 'error',
         signal: AbortSignal.timeout(15_000),
       });
-      if (response.status === 404) {
-        await response.body?.cancel().catch(() => {});
-        return null;
-      }
       body = await response.json().catch((error) => {
         if (!response.ok || error instanceof SyntaxError) return null;
         throw error;
@@ -91,10 +105,8 @@ export async function fetchLatestRelease(request = fetch, { wait = sleep, now = 
 
     if (message === undefined) {
       if (response.ok) {
-        if (!body || typeof body !== 'object' || Array.isArray(body)) {
-          throw new Error('GitHub Release 响应无效');
-        }
-        return body;
+        if (!Array.isArray(body)) throw new Error('GitHub Release 列表响应无效');
+        return { releases: body, hasNext: /;\s*rel="next"/.test(response.headers.get('link') ?? '') };
       }
       ({ message, retryDelay } = releaseApiFailure(response, body, token, now(), backoff));
     }
@@ -108,19 +120,60 @@ export async function fetchLatestRelease(request = fetch, { wait = sleep, now = 
   }
 }
 
-function makeManifest(release) {
-  if (release === null) return { schemaVersion: 1, release: null };
-  const tag = release.tag_name;
-  const url = `https://github.com/${appRepository}/releases/tag/${tag}`;
-  if (typeof tag !== 'string' || !versionTag.test(tag) ||
-      release.draft !== false || release.prerelease !== false ||
-      !release.published_at || release.html_url !== url ||
-      !Array.isArray(release.assets) ||
-      !release.assets.some((asset) => asset?.state === 'uploaded' &&
-        typeof asset.name === 'string' && /\.apk$/i.test(asset.name))) {
-    throw new Error('正式 GitHub Release 应使用 vMAJOR.MINOR.PATCH 标签并包含已上传的 APK');
+function eligibleRelease(release) {
+  const tag = release?.tag_name;
+  return typeof tag === 'string' && tag.length <= 129 && tag.match(versionTag)?.[0] === tag &&
+    release.draft === false && typeof release.prerelease === 'boolean' &&
+    typeof release.published_at === 'string' && Number.isFinite(Date.parse(release.published_at)) &&
+    release.html_url === `https://github.com/${appRepository}/releases/tag/${tag}` &&
+    Array.isArray(release.assets) && release.assets.some((asset) => asset?.state === 'uploaded' &&
+      typeof asset.name === 'string' && /\.apk$/i.test(asset.name));
+}
+
+function compareTags(first, second) {
+  const a = first.slice(1).split('.').map(BigInt);
+  const b = second.slice(1).split('.').map(BigInt);
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return a[i] > b[i] ? 1 : -1;
   }
-  return { schemaVersion: 1, release: { version: tag.slice(1), url } };
+  return 0;
+}
+
+function changelog(body) {
+  if (typeof body !== 'string') return [];
+  const changes = [];
+  let inSummary = false;
+  let fence;
+  for (const line of body.split(/\r?\n/)) {
+    const delimiter = line.trimStart().match(/^(`{3,}|~{3,})/);
+    if (delimiter) {
+      if (!fence) fence = delimiter[1];
+      else if (delimiter[1][0] === fence[0] && delimiter[1].length >= fence.length) fence = undefined;
+      continue;
+    }
+    if (fence) continue;
+    if (/^\s{0,3}#{1,6}\s+/.test(line)) {
+      if (inSummary) break;
+      inSummary = /^\s{0,3}##\s+本次更新\s*#*\s*$/.test(line);
+      continue;
+    }
+    if (!inSummary) continue;
+    const bullet = line.match(/^\s{0,3}[-*+]\s+(.+)$/)?.[1];
+    if (!bullet || /https?:\/\/|<[^>]*>|\]\s*\(/i.test(bullet)) continue;
+    const plain = bullet.replace(/[\p{Cc}\u2028-\u202e\u2066-\u2069]+/gu, ' ')
+      .replace(/([*`])\1?([^*`]+)\1\1?/g, '$2').trim();
+    if (plain) changes.push([...plain].slice(0, 160).join('').trimEnd());
+    if (changes.length === 5) break;
+  }
+  return changes;
+}
+
+function manifestRelease(release, prerelease) {
+  if (release === null) return null;
+  if (!eligibleRelease(release) || release.prerelease !== prerelease) {
+    throw new Error('GitHub Release 应匹配发布渠道、使用 vMAJOR.MINOR.PATCH 标签并包含已上传的 APK');
+  }
+  return { version: release.tag_name.slice(1), url: release.html_url, prerelease, changelog: changelog(release.body) };
 }
 
 async function validateAssets(source) {
@@ -163,9 +216,16 @@ export async function buildAssets(output, {
   source = 'assets',
   headersFile = 'internal/exporter/headers.txt',
   release = null,
+  prerelease = null,
 } = {}) {
   source = resolve(source);
-  const manifest = makeManifest(release);
+  const manifest = {
+    schemaVersion: 1,
+    release: manifestRelease(release, false),
+    prerelease: manifestRelease(prerelease, true),
+  };
+  const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
+  if (Buffer.byteLength(manifestText) > 16 * 1024) throw new Error('App 版本清单过大');
   await validateAssets(source);
   const headers = (await readFile(headersFile, 'utf8')).replaceAll('\r\n', '\n');
   const assetsHeaders = headers.match(/^\/assets\/\*\n(?:[ \t]+[^\n]+\n?)+/m)?.[0];
@@ -177,12 +237,11 @@ export async function buildAssets(output, {
   await cp(source, assets, { recursive: true, filter: (path) => basename(path) !== '.gitkeep' });
   await writeFile(join(output, '_headers'), assetsHeaders);
   await mkdir(join(assets, 'app'), { recursive: true });
-  await writeFile(join(assets, 'app', 'latest.json'), `${JSON.stringify(manifest, null, 2)}\n`, { flag: 'wx' });
+  await writeFile(join(assets, 'app', 'latest.json'), manifestText, { flag: 'wx' });
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   const [output = '.work/assets-public', mode] = process.argv.slice(2);
   if (mode && mode !== '--github-release') throw new Error(`未知构建选项: ${mode}`);
-  const release = mode === '--github-release' ? await fetchLatestRelease() : null;
-  await buildAssets(output, { release });
+  await buildAssets(output, mode === '--github-release' ? await fetchPublishedReleases() : {});
 }

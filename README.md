@@ -1,10 +1,16 @@
 # NEUQ One Data
 
-NEUQ One 的非官方公共数据与静态资源服务。Cloudflare Pages 为 Flutter 客户端提供空教室 API 和校园地图。Go Collector 从学校教务系统采集空教室数据，生成包含教室编号、容量、设备分类、目标日期、空闲时段和实际采集时间的静态 JSON。
+NEUQ One 的非官方公共数据与静态资源服务。Go Collector 从学校教务系统采集空教室数据，生成包含教室编号、容量、设备分类、目标日期、空闲时段和实际采集时间的 JSON。
 
-空教室默认覆盖今天及未来六天、每天六个课节组，以及工学馆、科技楼和人文楼。发布目录包含三份 JSON、Pages 响应头配置和仓库中的 `assets/` 静态资源。
+空教室默认覆盖今天及未来六天、每天六个课节组，以及工学馆、科技楼和人文楼。两个 Cloudflare Pages 项目共用本仓库，分别发布。
+
+| 生产地址 | 内容 | 发布入口 |
+| --- | --- | --- |
+| `https://neuq-one-data.pages.dev` | 空教室快照与采集状态，迁移期间兼容旧客户端的地图和政策请求 | [`classrooms.yml`](.github/workflows/classrooms.yml) |
+| `https://neuq-one-assets.pages.dev` | 校园地图、学校政策目录及 PDF、App 版本清单 | [`assets.yml`](.github/workflows/assets.yml) |
 
 - [API 文档](docs/api.md)及 [JSON Schema](docs/api-v1.schema.json)
+- [部署架构](docs/architecture.md)
 - [Flutter 接入设计](docs/flutter-integration.md)
 - [静态资源与校园地图](docs/static-assets.md)
 - [协议依据与待验证项](docs/upstream.md)
@@ -13,7 +19,9 @@ NEUQ One 的非官方公共数据与静态资源服务。Cloudflare Pages 为 Fl
 
 **Cloudflare Workers Cron Triggers → GitHub REST API `workflow_dispatch` → GitHub Actions → Go Collector → Cloudflare Pages → Flutter 客户端**
 
-Cloudflare Worker `neuq-one-scheduler` 用加密 Secret `GITHUB_TOKEN` 调用 GitHub REST API，触发默认分支上的 [`classrooms.yml`](.github/workflows/classrooms.yml)。GitHub Actions 构建并运行 Go Collector，校验快照后将 `assets/` 合并到 `public/assets/`，再通过 Wrangler 发布到 Cloudflare Pages。Flutter 客户端从同一生产地址读取公开 API 和静态资源。
+Cloudflare Worker `neuq-one-scheduler` 用加密 Secret `GITHUB_TOKEN` 调用 GitHub REST API，触发默认分支上的 [`classrooms.yml`](.github/workflows/classrooms.yml)。GitHub Actions 构建并运行 Go Collector，校验快照后把兼容资源复制到 `public/assets/`，再通过 Wrangler 发布至 `neuq-one-data`。
+
+[`assets.yml`](.github/workflows/assets.yml) 在 `main` 的静态资源、构建脚本、响应头或工作流配置变更后运行，也可手动触发。App 仓库发布正式 GitHub Release 后，通过独立工作流触发同一次静态构建和发布。静态构建只读取仓库文件和公开的 Release 元数据。[静态资源部署与版本更新](docs/static-assets.md)
 
 Worker 的 Cron 表达式为 `5 * * * *`，按 UTC 调度。每次请求都带 `publish=true` 和 `bootstrap=false`。
 
@@ -31,6 +39,13 @@ Worker 的 Cron 表达式为 `5 * * * *`，按 UTC 调度。每次请求都带 `
 ```sh
 go test ./...
 go build ./...
+```
+
+在仓库根目录用 Node.js 24 独立构建并测试静态资源。
+
+```sh
+node scripts/build-assets.mjs
+node --test scripts/test-build-assets.mjs
 ```
 
 实际采集前，请确认学校允许该账号自动查询、允许所选部署环境访问教务入口，并允许公开分发空教室数据。使用获授权的专用账号，通过进程环境注入凭据。程序直接读取环境变量，`.env.example` 提供配置清单。
@@ -82,7 +97,8 @@ bash scripts/stage-assets.sh
 | `NEUQ_TODAY_TTL` | `2h`，当天时段从实际采集起的有效期 |
 | `NEUQ_FUTURE_TTL` | `26h`，未来时段从实际采集起的有效期 |
 | `NEUQ_PUBLIC_ORIGIN` | Actions 默认从 `https://<项目名>.pages.dev` 恢复历史。以 Pages 实际生产地址为准 |
-| `CLOUDFLARE_PROJECT` | `neuq-one-data`，Cloudflare Pages 项目名 |
+| `CLOUDFLARE_PROJECT` | `neuq-one-data`，空教室 Pages 项目名 |
+| `CLOUDFLARE_ASSETS_PROJECT` | `neuq-one-assets`，静态资源 Pages 项目名，须使用独立项目 |
 
 自动调度由 Worker 的 Cron Trigger 控制。旧变量 `NEUQ_COLLECTION_ENABLED` 属于迁移前的 Actions 定时配置，可从 Actions Variables 移除。
 
@@ -90,7 +106,7 @@ bash scripts/stage-assets.sh
 
 ## 部署
 
-地图由维护者手动将 `assets/maps/campus-map.png` 提交到默认分支，随下一次成功的生产部署上线。[上传步骤与转载许可记录](docs/static-assets.md)
+静态站首次部署需创建独立 Direct Upload 项目，沿用本仓库的 Cloudflare Secrets。新版客户端上线前，先运行 **Deploy static assets** 并验证生产 URL。旧版客户端的地图和政策继续随空教室快照发布，确认兼容期结束后再移除旧工作流的静态复制步骤。[静态站和正式 Release 配置](docs/static-assets.md)
 
 ### 建立第一个生产快照
 

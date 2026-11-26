@@ -1,20 +1,19 @@
 # NEUQ One 客户端接入
 
-## 校园地图
+Flutter 通过 Riverpod 提供 `PublicDataClient`，公共请求不使用学校会话。默认根地址可分别用 `--dart-define=NEUQ_ONE_DATA_ORIGIN` 和 `--dart-define=NEUQ_ONE_ASSETS_ORIGIN` 覆盖。[客户端接口和构建示例](https://github.com/LTCpond/neuq-one/blob/main/docs/public-data.md)
 
-Flutter 的「服务 → 校园地图」从 `GET /assets/maps/campus-map.png` 读取原分辨率的静态 PNG，生产域名与空教室 API 一致。资源为公开 HTTPS，客户端的公共 HTTP 请求无需学校会话。
+## 空教室
 
-首次成功下载并解码后，客户端将图片与 HTTP 验证信息一起存入设备。再次进入页面时先展示有效的本地文件，再发起条件 GET。收到 `304`、下载失败或新文件解码失败时继续使用旧图。首次访问失败时，页面提供重试入口。[静态资源发布与许可](static-assets.md)
+`classroomsProvider` 从 `https://neuq-one-data.pages.dev/api/v1/classrooms/week.json` 读取七日快照，保留日期、每个时段的状态、`collectedAt` 和 `expiresAt`。快照与 `ETag` 等验证信息保存在设备级缓存，刷新失败时保留最近一次有效的快照。客户端按北京时间匹配日期，按时段有效期判断是否过期。
 
-## 空教室接入设计
+有效时段的 `rooms: []` 表示暂无空教室。过期数据可带提示显示，缺失时段显示不可用。过期或缺失的时段不参与全天空闲和下节有课的计算。[空教室 API v1](api.md#空教室-api-v1)
 
-Flutter 的入口是 `classroomsProvider`。它从 `SchoolClassroomsDataSource.fetchClassrooms(day)` 获取结果，调用方使用 `ClassroomSchedules`、`CampusBuilding` 和 `ClassroomSchedule`。当前 Provider 和页面限制当日查询。首期只需读取 `today.json`，将来放开日期选择时，可从 `week.json` 以北京时间自然日筛选。
+## 静态资源
 
-1. 在 services feature 的数据层增加公共 API 适配器，由 Riverpod 提供接口。使用 `date` 和版本索引本地缓存，保留完整时段状态、`collectedAt` 和 `expiresAt`。缓存按目标日期查询，先显示可用缓存，再按进入页面和手动刷新触发条件 GET。每次更新从同一份完整快照构建。
-2. 校验 `schemaVersion == 1`、响应日期、时区和时间字段。网络失败时继续使用同日期缓存，并按 `expiresAt` 更新状态。跨天时按北京时间重算日期。HTTP 404、未知版本和非法响应均视为公共数据不可用。
-3. 将已知楼栋名映射到 `CampusBuilding`，将 `1-2` 等键转换成 `1, 3, 5, 7, 9, 11`，用 `periodCount: 12, periodsPerGroup: 2` 构造 `ClassroomSchedule`。有效 `success` 的 `rooms: []` 映射为空集合。`unavailable` 与已过期时段从传给可用性推导的时段映射中省略，避免误判全天空闲或下节有课。
-4. 通过 Provider 返回值或配套状态对象把每时段时间戳和状态交给现有页面。现有 `syncedAt` 可承载 `updatedAt`，时段详情用自己的 `collectedAt` 展示。过期时段可显示带明确提示的旧列表，成功空数组显示暂无空教室，缺失状态显示查询不可用。
-5. 保留现有 WebView 教务适配器。公共数据不可用时提供用户主动操作的「通过教务查询」入口，沿用登录及会话校验。拉取公共 API 时使用普通 HTTP 客户端，学校凭据留在原有学校认证链路。
-6. 接入测试应覆盖跨北京时间午夜、旧版本和畸形 JSON、HTTP 缓存、部分时段失败、过期的空数组以及下一时段缺失时的标签行为。
+新版客户端从 `https://neuq-one-assets.pages.dev` 读取静态资源。
 
-接口契约见 [空教室 API v1](api.md)。Flutter 数据源及过滤规则见 [NEUQ One 客户端仓库](https://github.com/LTCpond/neuq-one)。
+- `/assets/maps/campus-map.png` 提供原分辨率 PNG。客户端先展示已校验的本地文件，联网校验更新时使用同一域名的 HTTP 验证信息。`304` 或请求和解码失败时继续使用已缓存的地图。
+- `/assets/policies/index.json` 提供政策目录，`/assets/policies/<id>.pdf` 提供对应原件。缓存目录可离线使用，PDF 按目录中的 SHA-256 校验后存储。
+- `/assets/app/latest.json` 提供可供客户端比较的版本号和 GitHub Release 页面。用户手动检查更新时读取清单，APK 从 GitHub Releases 下载。
+
+迁移期间，旧版客户端可在 `neuq-one-data` 的原路径访问地图和政策。先部署并验证静态站，再发布新版客户端。[静态资源接口](api.md#静态资源) · [部署顺序](static-assets.md)

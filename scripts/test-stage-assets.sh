@@ -18,9 +18,13 @@ test ! -e public/assets/maps/campus-map.png
 printf 'first map\n' > assets/maps/campus-map.png
 mkdir -p assets/other
 printf 'another asset\n' > assets/other/sample.txt
+printf 'installer fixture\n' > assets/other/app.APK
+printf 'bundle fixture\n' > assets/other/app.aab
 bash "$repo_root/scripts/stage-assets.sh"
 cmp assets/maps/campus-map.png public/assets/maps/campus-map.png
 cmp assets/other/sample.txt public/assets/other/sample.txt
+test ! -e public/assets/other/app.APK
+test ! -e public/assets/other/app.aab
 test "$(cat public/api/v1/classrooms/week.json)" = 'first snapshot'
 cmp "$repo_root/internal/exporter/headers.txt" public/_headers
 grep -A1 -Fx '/assets/*' public/_headers | grep -Fxq '  Cache-Control: public, no-cache, no-transform'

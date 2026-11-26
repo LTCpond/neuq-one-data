@@ -1,0 +1,59 @@
+name: Deploy static assets
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'assets/**'
+      - 'scripts/build-assets.mjs'
+      - 'internal/exporter/headers.txt'
+      - '.github/workflows/assets.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: assets-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Build static assets and latest release manifest
+        run: node scripts/build-assets.mjs .work/assets-public --github-release
+      - name: Install Wrangler
+        run: npm install --prefix .work/wrangler --no-save --no-package-lock wrangler@4.168.0
+      - name: Deploy static assets to production
+        env:
+          CLOUDFLARE_ASSETS_PROJECT: ${{ vars.CLOUDFLARE_ASSETS_PROJECT || 'neuq-one-assets' }}
+          CLOUDFLARE_DATA_PROJECT: ${{ vars.CLOUDFLARE_PROJECT || 'neuq-one-data' }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: 'false'
+        run: |
+          if [[ ! "$CLOUDFLARE_ASSETS_PROJECT" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+            echo '静态资源 Pages 项目名称无效'
+            exit 1
+          fi
+          if [[ "$CLOUDFLARE_ASSETS_PROJECT" == "$CLOUDFLARE_DATA_PROJECT" || "$CLOUDFLARE_ASSETS_PROJECT" == neuq-one-data ]]; then
+            echo '静态资源需要独立的 Pages 项目'
+            exit 1
+          fi
+          if [[ -z "$CLOUDFLARE_API_TOKEN" || -z "$CLOUDFLARE_ACCOUNT_ID" ]]; then
+            echo '请配置 Cloudflare 部署 Secrets'
+            exit 1
+          fi
+          .work/wrangler/node_modules/.bin/wrangler pages deploy .work/assets-public \
+            --project-name "$CLOUDFLARE_ASSETS_PROJECT" --branch main

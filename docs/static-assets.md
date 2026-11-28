@@ -59,7 +59,9 @@ curl -sS -D - -o /dev/null -H "If-None-Match: $etag" "$url"
 2. 在 App 仓库使用 `vMAJOR.MINOR.PATCH` 标签，上传已验签的 APK，再按 APK 的构建渠道发布公测或正式 Release。在 Release Notes 的 `## 本次更新` 下填写 3～5 条简短的中文纯文本列表。生成脚本提取该节摘要，保存最多五条、每条 160 个 Unicode 码点。没有摘要时生成空数组。
 3. App 仓库的 **Update app version manifest** 会在两种渠道的发布、编辑、撤回或删除事件后触发 `assets.yml`。Data 每次从公开 Release 列表重新选择两个渠道中版本号最高且已有 APK 的非草稿发布。检查 **Deploy static assets** 下的两个部署任务，并核对两站的 `/assets/app/latest.json`。撤回后可重跑任一仓库的清单刷新工作流。[清单格式](api.md#静态资源) · [GitHub Release 列表 API](https://docs.github.com/en/rest/releases/releases#list-releases)
 
-如由其他工作流发布 Release，使用能触发后续 Actions 的 GitHub App 令牌或 PAT，或在成功发布后显式 dispatch `assets.yml`。APK 留在 GitHub Releases。[使用 `GITHUB_TOKEN` 触发工作流](https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication)
+如由其他工作流发布 Release，使用能触发后续 Actions 的 GitHub App 令牌或 PAT，或在成功发布后显式 dispatch `assets.yml`。[使用 `GITHUB_TOKEN` 触发工作流](https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication)
+
+App 发布工作流验证 R2 下载后，将 `apk-downloads.json` 和三个 APK 发布为 GitHub Release 附件。Data 构建校验元数据附件及其与三个 GitHub APK 的文件名、大小和 SHA-256 对应关系。清单沿用 `schemaVersion: 1`，`url` 仍指向 GitHub Release 页面，可选 `downloads` 提供每个 ABI 的 R2 地址和 GitHub APK 备用地址。历史版本没有该附件时沿用 GitHub 下载，附件校验失败时保留上一份部署。Azure 和 Cloudflare Pages 只接收清单和现有公共资源。
 
 **Deploy static assets** 的构建步骤使用 GitHub Actions 内置 `GITHUB_TOKEN`，以 `contents: read` 权限读取公开 Release 列表。本地使用 `--github-release` 联网构建时，也可通过同名环境变量提供令牌。公开列表为空时两个渠道均为 `null`，读取失败时保留上一份部署。[GitHub Actions 令牌认证](https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication)
 

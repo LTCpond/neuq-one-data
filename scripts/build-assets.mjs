@@ -6,6 +6,11 @@ import { pathToFileURL } from 'node:url';
 
 const appRepository = 'LTCpond/neuq-one';
 const versionTag = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
+const downloadMetadata = 'apk-downloads.json';
+const downloadOrigin = 'https://download.neuq.one';
+const apkAbis = ['arm64-v8a', 'armeabi-v7a', 'x86_64'];
+const maxManifestBytes = 16 * 1024;
+const maxApkBytes = 2 * 1024 ** 3 - 1;
 const maxFileBytes = 25 * 1024 * 1024;
 const maxPolicyIndexBytes = 128 * 1024;
 const mapFile = 'maps/campus-map.png';
@@ -170,12 +175,86 @@ function changelog(body) {
   return changes;
 }
 
-function manifestRelease(release, prerelease) {
+function githubDownload(tag, filename) {
+  return `https://github.com/${appRepository}/releases/download/${tag}/${filename}`;
+}
+
+async function readDownloadMetadata(asset, request) {
+  const options = { redirect: 'manual', signal: AbortSignal.timeout(15_000) };
+  let response = await request(asset.browser_download_url, options);
+  if ([301, 302, 303, 307, 308].includes(response.status)) {
+    const location = new URL(response.headers.get('location'));
+    await response.body?.cancel();
+    if (!['https://release-assets.githubusercontent.com', 'https://objects.githubusercontent.com'].includes(location.origin) ||
+        location.username || location.password || location.hash) {
+      throw new Error('下载元数据重定向地址无效');
+    }
+    response = await request(location.href, { ...options, redirect: 'error' });
+  }
+  if (response.status !== 200 || !response.body) {
+    await response.body?.cancel();
+    throw new Error('无法读取下载元数据附件');
+  }
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of response.body) {
+    size += chunk.length;
+    if (size > asset.size) throw new Error('下载元数据附件过大');
+    chunks.push(chunk);
+  }
+  const bytes = Buffer.concat(chunks, size);
+  if (size !== asset.size || asset.digest !== `sha256:${createHash('sha256').update(bytes).digest('hex')}`) {
+    throw new Error('下载元数据附件完整性校验失败');
+  }
+  return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+}
+
+async function releaseDownloads(release, request) {
+  const tag = release.tag_name;
+  const assets = release.assets.filter((asset) => asset?.name === downloadMetadata);
+  if (assets.length === 0) return undefined;
+  const [asset] = assets;
+  if (assets.length !== 1 || asset.state !== 'uploaded' ||
+      asset.browser_download_url !== githubDownload(tag, downloadMetadata) ||
+      !Number.isSafeInteger(asset.size) || asset.size < 1 || asset.size > maxManifestBytes) {
+    throw new Error(`GitHub Release 下载元数据附件无效（${tag}）`);
+  }
+  let metadata;
+  try {
+    metadata = await readDownloadMetadata(asset, request);
+  } catch {
+    throw new Error(`GitHub Release 下载元数据读取或完整性校验失败（${tag}）`);
+  }
+  if (metadata?.schemaVersion !== 1 || metadata.version !== tag.slice(1) ||
+      !Array.isArray(metadata.downloads) || metadata.downloads.length !== apkAbis.length) {
+    throw new Error(`GitHub Release 下载元数据格式无效（${tag}）`);
+  }
+  return apkAbis.map((abi) => {
+    const matches = metadata.downloads.filter((download) => download?.abi === abi);
+    const { filename, url, fallbackUrl, size, sha256 } = matches[0] ?? {};
+    const expectedFilename = `neuq-one-${tag}-${abi}.apk`;
+    const apkAssets = release.assets.filter((candidate) => candidate?.name === expectedFilename);
+    const [apk] = apkAssets;
+    if (matches.length !== 1 || filename !== expectedFilename ||
+        url !== `${downloadOrigin}/releases/${tag}/${expectedFilename}` ||
+        fallbackUrl !== githubDownload(tag, expectedFilename) ||
+        !Number.isSafeInteger(size) || size < 1 || size > maxApkBytes ||
+        typeof sha256 !== 'string' || sha256.length !== 64 || !/^[a-f0-9]+$/.test(sha256) ||
+        apkAssets.length !== 1 || apk.state !== 'uploaded' || apk.size !== size ||
+        apk.digest !== `sha256:${sha256}` || apk.browser_download_url !== fallbackUrl) {
+      throw new Error(`GitHub Release APK 下载信息无效（${tag} ${abi}）`);
+    }
+    return { abi, filename, url, fallbackUrl, size, sha256 };
+  });
+}
+
+async function manifestRelease(release, prerelease, request) {
   if (release === null) return null;
   if (!eligibleRelease(release) || release.prerelease !== prerelease) {
     throw new Error('GitHub Release 应匹配发布渠道、使用 vMAJOR.MINOR.PATCH 标签并包含已上传的 APK');
   }
-  return { version: release.tag_name.slice(1), url: release.html_url, prerelease, changelog: changelog(release.body) };
+  const downloads = await releaseDownloads(release, request);
+  return { version: release.tag_name.slice(1), url: release.html_url, prerelease, changelog: changelog(release.body), downloads };
 }
 
 async function validateAssets(source) {
@@ -251,15 +330,16 @@ export async function buildAssets(output, {
   headersFile = 'internal/exporter/headers.txt',
   release = null,
   prerelease = null,
+  request = fetch,
 } = {}) {
   source = resolve(source);
   const manifest = {
     schemaVersion: 1,
-    release: manifestRelease(release, false),
-    prerelease: manifestRelease(prerelease, true),
+    release: await manifestRelease(release, false, request),
+    prerelease: await manifestRelease(prerelease, true, request),
   };
   const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
-  if (Buffer.byteLength(manifestText) > 16 * 1024) throw new Error('App 版本清单过大');
+  if (Buffer.byteLength(manifestText) > maxManifestBytes) throw new Error('App 版本清单过大');
   const files = await validateAssets(source);
   if (!files.has(mapFile) || !files.has(policyIndex)) throw new Error('静态发布缺少校园地图或政策目录');
   const headers = (await readFile(headersFile, 'utf8')).replaceAll('\r\n', '\n');

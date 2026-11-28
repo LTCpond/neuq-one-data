@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,6 +19,31 @@ const release = {
 function tagged(tag, changes = {}) {
   return { ...release, tag_name: tag,
     html_url: `https://github.com/LTCpond/neuq-one/releases/tag/${tag}`, ...changes };
+}
+
+function distribution(tag, { prerelease = false, edit = () => {} } = {}) {
+  const downloads = ['arm64-v8a', 'armeabi-v7a', 'x86_64'].map((abi, index) => {
+    const filename = `neuq-one-${tag}-${abi}.apk`;
+    return {
+      abi, filename,
+      url: `https://download.neuq.one/releases/${tag}/${filename}`,
+      fallbackUrl: `https://github.com/LTCpond/neuq-one/releases/download/${tag}/${filename}`,
+      size: 4000 + index,
+      sha256: createHash('sha256').update(abi).digest('hex'),
+    };
+  });
+  const apkAssets = downloads.map(({ filename, fallbackUrl, size, sha256 }) => ({
+    name: filename, state: 'uploaded', browser_download_url: fallbackUrl, size, digest: `sha256:${sha256}`,
+  }));
+  const metadata = { schemaVersion: 1, version: tag.slice(1), downloads };
+  edit(metadata, apkAssets);
+  const bytes = Buffer.from(JSON.stringify(metadata));
+  const attachment = {
+    name: 'apk-downloads.json', state: 'uploaded', size: bytes.length,
+    browser_download_url: `https://github.com/LTCpond/neuq-one/releases/download/${tag}/apk-downloads.json`,
+    digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+  };
+  return { release: tagged(tag, { prerelease, assets: [...apkAssets, attachment] }), downloads, bytes, attachment };
 }
 
 async function temp(t) {
@@ -73,6 +99,106 @@ test('uses the public release list and stages only metadata from GitHub', async 
     release: { version: '1.10.0', url: release.html_url, prerelease: false, changelog: [] },
     prerelease: null,
   });
+});
+
+test('publishes verified downloads for both channels and preserves schema 1 release links', async (t) => {
+  setReleaseToken(t, 'release-token-for-tests');
+  const output = join(await temp(t), 'site');
+  const stable = distribution('v2.1.0');
+  const beta = distribution('v2.2.0', { prerelease: true });
+  const old = distribution('v2.0.0');
+  const responseUrls = new Map();
+  for (const item of [stable, beta]) {
+    const signed = `https://release-assets.githubusercontent.com/files/${item.release.tag_name}?signature=test`;
+    responseUrls.set(item.attachment.browser_download_url, Response.redirect(signed));
+    responseUrls.set(signed, new Response(item.bytes));
+  }
+  const latest = await fetchPublishedReleases(async () => Response.json([stable.release, beta.release, old.release]));
+  await buildAssets(output, {
+    ...latest,
+    request: async (url, options) => {
+      assert.equal(options.headers, undefined);
+      assert.equal(options.redirect, url.startsWith('https://github.com/') ? 'manual' : 'error');
+      assert.ok(responseUrls.has(url), 'only selected release metadata is fetched');
+      return responseUrls.get(url);
+    },
+  });
+
+  const manifest = await readManifest(output);
+  assert.equal(manifest.schemaVersion, 1);
+  for (const [slot, fixture] of [['release', stable], ['prerelease', beta]]) {
+    const { version, url, prerelease, changelog, downloads } = manifest[slot];
+    assert.deepEqual({ version, url, prerelease, changelog }, {
+      version: fixture.release.tag_name.slice(1), url: fixture.release.html_url,
+      prerelease: fixture.release.prerelease, changelog: [],
+    });
+    assert.deepEqual(downloads, fixture.downloads);
+  }
+  assert.deepEqual(await readdir(join(output, 'assets', 'app')), ['latest.json']);
+});
+
+test('uses GitHub alone for a historical APK with the expected filename but no attachment', async (t) => {
+  const output = join(await temp(t), 'site');
+  const fixture = distribution('v1.3.0');
+  fixture.release.assets.pop();
+  await buildAssets(output, { release: fixture.release, request: () => assert.fail('no download metadata') });
+  assert.deepEqual(await readManifest(output), {
+    schemaVersion: 1,
+    release: { version: '1.3.0', url: fixture.release.html_url, prerelease: false, changelog: [] },
+    prerelease: null,
+  });
+});
+
+test('stops deployment when release metadata or the referenced APKs fail validation', async (t) => {
+  const root = await temp(t);
+  const output = join(root, 'site');
+  for (const edit of [
+    (metadata) => { metadata.version = '2.0.0'; },
+    (metadata) => { metadata.schemaVersion = 2; },
+    (metadata) => { metadata.downloads.pop(); },
+    (metadata) => { metadata.downloads[1] = metadata.downloads[0]; },
+    (metadata) => { metadata.downloads[0].filename = 'elsewhere.apk'; },
+    (metadata) => { metadata.downloads[0].url += '?query=invalid'; },
+    (metadata) => { metadata.downloads[0].url = metadata.downloads[0].url.replace('https:', 'http:'); },
+    (metadata) => { metadata.downloads[0].url = metadata.downloads[0].url.replace('download.neuq.one', 'download.neuq.one.test'); },
+    (metadata) => { delete metadata.downloads[0].url; },
+    (metadata) => { metadata.downloads[0].fallbackUrl = metadata.downloads[0].fallbackUrl.replace('/v1.3.0/', '/v2.0.0/'); },
+    (metadata) => { metadata.downloads[0].size = 2 ** 31; },
+    (metadata) => { metadata.downloads[0].sha256 += '\n'; },
+    (_, apks) => { apks[0].size++; },
+    (_, apks) => { apks[0].digest = null; },
+  ]) {
+    const fixture = distribution('v1.3.0', { edit });
+    await assert.rejects(buildAssets(output, {
+      release: fixture.release, request: async () => new Response(fixture.bytes),
+    }), /下载元数据格式无效|APK 下载信息无效/);
+  }
+  assert.deepEqual(await readdir(root), []);
+});
+
+test('bounds and authenticates the metadata response and rejects unsafe redirects', async (t) => {
+  const root = await temp(t);
+  const output = join(root, 'site');
+  const fixture = distribution('v1.3.0');
+  for (const invalidResponse of [
+    Response.redirect('https://external.test/apk-downloads.json'),
+    new Response(null, { status: 404 }),
+    new Response(Buffer.concat([fixture.bytes, Buffer.from(' ')])),
+    new Response(Buffer.alloc(fixture.bytes.length, 32)),
+  ]) {
+    await assert.rejects(buildAssets(output, {
+      release: fixture.release,
+      request: async (url) => {
+        assert.equal(url, fixture.attachment.browser_download_url);
+        return invalidResponse;
+      },
+    }), /下载元数据读取或完整性校验失败/);
+  }
+  fixture.attachment.browser_download_url = 'https://example.org/apk-downloads.json';
+  await assert.rejects(buildAssets(output, {
+    release: fixture.release, request: () => assert.fail('untrusted attachment URL'),
+  }), /下载元数据附件无效/);
+  assert.deepEqual(await readdir(root), []);
 });
 
 test('an empty list clears both channels; a 404 does not publish an empty manifest', async (t) => {
